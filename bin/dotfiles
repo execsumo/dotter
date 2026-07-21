@@ -205,8 +205,11 @@ reject_unrepresentable() {
       info "Rename the file if you need it tracked."
       return 1 ;;
   esac
+  # $'\n' and not "$(printf '\n')": command substitution strips trailing
+  # newlines, so the latter yields an EMPTY string and the pattern degenerates
+  # to *""* — which matches every path and rejects everything.
   case "$rel" in
-    *"$(printf '\n')"*)
+    *$'\n'*)
       bad "$rel contains a newline — cannot track it"
       return 1 ;;
   esac
