@@ -168,6 +168,70 @@ test_nested_gitignore() {
   fi
 }
 
+test_pipe_rejected() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  touch "$HOME/my|file"
+  "$BIN" add "$HOME/my|file" >out 2>&1 || true
+  grep -q "cannot track it" out || return 1
+  if [ -f "$DOTFILES_DIR/dotfiles.manifest" ]; then
+    if grep -q "|my|" "$DOTFILES_DIR/dotfiles.manifest"; then
+      echo "Manifest was corrupted"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+test_intra_repo_symlink() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$DOTFILES_DIR/dir1"
+  touch "$DOTFILES_DIR/dir1/target"
+  ln -s "$DOTFILES_DIR/dir1/target" "$DOTFILES_DIR/dir1/link1"
+  "$BIN" status >out 2>&1 || true
+  if grep -q "Machine-specific" out; then
+    echo "Intra-repo absolute symlink was falsely flagged"
+    return 1
+  fi
+  
+  ln -s "/tmp/nowhere" "$DOTFILES_DIR/dir1/link2"
+  "$BIN" status >out 2>&1 || true
+  if ! grep -q "Machine-specific" out; then
+    echo "Foreign symlink was NOT flagged"
+    return 1
+  fi
+}
+
+test_init_prefers_main() {
+  git clone "$REMOTE_DIR" "$TEST_DIR/remote-setup" >/dev/null 2>&1
+  cd "$TEST_DIR/remote-setup"
+  touch f && git add f && git commit -qm "init"
+  git branch main
+  git branch apple
+  git push -q origin main apple
+  git -C "$REMOTE_DIR" symbolic-ref HEAD refs/heads/nonexistent
+  cd - >/dev/null
+  
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  local branch
+  branch="$(git -C "$DOTFILES_DIR" branch --show-current)"
+  [ "$branch" = "main" ] || return 1
+}
+
+test_add_normal_file_newline_check() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  echo "content" > "$HOME/normalfile"
+  "$BIN" add "$HOME/normalfile" >out 2>&1 || true
+  if grep -q "reject" out || grep -q "cannot track it" out; then
+    echo "Normal file was rejected by newline check"
+    return 1
+  fi
+  [ -f "$DOTFILES_DIR/normalfile" ] || return 1
+}
+
+run_test "Pipe in filename rejected" test_pipe_rejected
+run_test "Intra-repo absolute symlink not flagged" test_intra_repo_symlink
+run_test "Init prefers main over alphabetically-earlier branch" test_init_prefers_main
+run_test "Add normal file passes newline check" test_add_normal_file_newline_check
 run_test "Bash 4+ syntax absent" test_bash_4_syntax
 run_test "Nested .git is refused" test_add_nested_git
 run_test "Add plain file" test_add_plain_file
