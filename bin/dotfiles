@@ -163,6 +163,22 @@ is_linked() {
   [ -L "$home_path" ] && [ "$(readlink "$home_path")" = "$repo_path" ]
 }
 
+# True when two paths are the same file on disk, including when they differ only
+# because an ANCESTOR directory is a symlink.
+#
+# This case is not hypothetical and it is dangerous: if ~/.pi is a symlink to
+# ~/.dotfiles/.pi (a legacy whole-directory entry), then
+# ~/.pi/agent/x and ~/.dotfiles/.pi/agent/x are ONE file. is_linked() says
+# "not linked" because the leaf itself is not a symlink, and any code that then
+# deletes "the repo copy to leave the local one alone" deletes both.
+same_file() {
+  [ -e "$1" ] && [ -e "$2" ] || return 1
+  local a b
+  a="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)/$(basename "$1")" || return 1
+  b="$(cd "$(dirname "$2")" 2>/dev/null && pwd -P)/$(basename "$2")" || return 1
+  [ "$a" = "$b" ]
+}
+
 # List symlinks under $1 whose target is an absolute path under none of the
 # remaining arguments. Those are machine-specific and will dangle anywhere else.
 #
@@ -512,6 +528,16 @@ cmd_add() {
       continue
     fi
 
+    # Same trap as in rm: if an ancestor of $src is a symlink into the repo,
+    # $src and $dest are one file and the 'mv' below would be a move onto
+    # itself — destroying it on some platforms.
+    if same_file "$src" "$dest"; then
+      warn "$rel already resolves into the repo through a symlinked parent"
+      info "It is effectively tracked already. Add a manifest entry by hand if"
+      info "you want it listed explicitly; moving it would be a no-op or worse."
+      continue
+    fi
+
     if [ "$type" = "dir" ]; then
       audit_dir "$src" "$rel" || continue
       confirm "Track the whole directory $rel/ ?" || { warn "skipped $rel/"; continue; }
@@ -777,6 +803,20 @@ cmd_rm() {
       rm -f "$dest"
       mv "$src" "$dest"
       ok "restored real file to $dest"
+    elif same_file "$src" "$dest"; then
+      # An ancestor of $dest is a symlink into the repo, so $dest and the repo
+      # copy are ONE file. There is no separate local copy to preserve, and
+      # deleting "just the repo copy" would delete the user's file too. Say so
+      # plainly instead of claiming to leave it alone.
+      warn "$rel resolves into the repo through a symlinked parent directory"
+      info "$dest and the repo copy are the SAME file — untracking deletes it"
+      info "from both. There is no separate local copy to keep."
+      if ! confirm "Delete $rel entirely and untrack it?"; then
+        warn "skipped $rel — still tracked"
+        continue
+      fi
+      rm -rf "$src"
+      ok "deleted and untracked"
     elif [ -e "$src" ]; then
       warn "$dest is not a link to the repo — leaving it alone, removing repo copy"
       rm -rf "$src"

@@ -52,7 +52,12 @@ wherever you happen to be, `sync` to share it, `link` to apply it.
 | `dotfiles link` (alias `apply`) | Symlink every manifest entry present in the repo but not yet linked here. Backs up conflicts as `*.bak`. |
 | `dotfiles sync [-m MESSAGE]` | Pull remote changes, then push local commits. With `-m`, commits the working tree first. |
 | `dotfiles status` | Per-entry link state, plus repo health warnings. |
-| `dotfiles rm [--yes] <path>...` | Untrack: restore the real file to `$HOME`, drop the manifest entry. |
+| `dotfiles rm [--yes] <path>...` (alias `remove`) | Untrack: restore the real file to `$HOME`, drop the manifest entry. |
+| `dotfiles help` / `version` | Also available as `-h`, `--help`, `--version`. |
+
+`--yes` may be shortened to `-y`; `init` also accepts `--non-interactive` as a
+synonym. `--yes` skips confirmation prompts, which is what makes the tool usable
+from a script; without a TTY and without it, prompts decline rather than hang.
 
 `DOTFILES_DIR` overrides the repo location (default `~/.dotfiles`).
 
@@ -112,8 +117,10 @@ one, it travels with the directory and keeps applying once nested in the
 dotfiles repo. The tool doesn't try to reinvent exclusion rules its owner
 already maintains.
 
-**Nothing is ever overwritten.** `link` moves a pre-existing real file to
-`<name>.bak` before symlinking over it.
+**Real files are backed up, not overwritten.** `link` moves a pre-existing real
+file to `<name>.bak` before symlinking over it. Precisely: an older `<name>.bak`
+is replaced by the newer backup, and a symlink in the way is removed rather than
+backed up (it holds no content of its own).
 
 **HTTPS remotes only.** `gh auth login` installs a git credential helper for
 HTTPS, so this works with no SSH key on the account. SSH remotes fail with

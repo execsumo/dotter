@@ -15,7 +15,7 @@ For *usage* see [README.md](README.md); for *why it is shaped this way* see
 |---|---|
 | Version | 1.0.0 (`dotfiles version`) |
 | Implementation | `bin/dotfiles`, single file, ~860 lines of bash |
-| Tests | `test/run-tests.sh`, 17 tests, all passing on bash 3.2 |
+| Tests | `test/run-tests.sh`, 19 tests, all passing on bash 3.2 |
 | Consumers | vibebox (`scripts/onboard`) |
 | Published | `https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles` |
 
@@ -29,7 +29,8 @@ For *usage* see [README.md](README.md); for *why it is shaped this way* see
 | `test/run-tests.sh` | Sandboxed suite. No network, no `gh`, no credentials. |
 | `README.md` | User-facing: install, commands, safety behaviours. |
 | `ARCHITECTURE.md` | Design rationale, invariants, platform constraints. |
-| `REVIEW.md` | Findings from an independent review pass. Historical record. |
+| `REVIEW.md` | Code findings from an independent review pass. Historical record. |
+| `DOC-REVIEW.md` | Doc-accuracy findings from an independent review pass. Historical record. |
 
 `bin/dotfiles` is deliberately one file: it is installed by fetching a single
 URL, and a multi-file layout would turn that into a packaging problem.
@@ -129,8 +130,9 @@ make it *say* so.
 Don't, casually. It is written by `add`, read by `link`/`status`/`rm`, and
 hand-edited by users. Any change must handle files written by an older version —
 there is no migration mechanism and no version field. Adding a *fourth* field is
-the cheapest compatible change, since parsers use `IFS='|' read -r type rel label`
-and would ignore it.
+the cheapest compatible change: readers either split on `IFS='|'`
+(`manifest_lines` consumers, `manifest_type_of`) or use `awk -F'|'`
+(`manifest_remove`), and all of them ignore trailing fields.
 
 ---
 

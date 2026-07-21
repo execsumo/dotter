@@ -168,6 +168,37 @@ test_nested_gitignore() {
   fi
 }
 
+# Regression: ~/.pi was a symlink to ~/.dotfiles/.pi, so a file reached through
+# it was the SAME file as the repo copy. rm reported "leaving it alone" and then
+# deleted it via rm -rf on the repo path. It must now detect this and confirm.
+test_rm_symlinked_parent() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$DOTFILES_DIR/pidir"
+  echo "payload" > "$DOTFILES_DIR/pidir/hooks.ts"
+  ln -s "$DOTFILES_DIR/pidir" "$HOME/pidir"
+  printf 'file|pidir/hooks.ts|Pi hooks\n' >> "$DOTFILES_DIR/dotfiles.manifest"
+
+  # Declining the prompt (no tty, no --yes) must leave the file intact.
+  "$BIN" rm "$HOME/pidir/hooks.ts" >out 2>&1 || true
+  grep -q "symlinked parent" out || { echo "did not detect symlinked parent"; return 1; }
+  [ -f "$DOTFILES_DIR/pidir/hooks.ts" ] || { echo "file destroyed despite declining"; return 1; }
+  [ "$(cat "$DOTFILES_DIR/pidir/hooks.ts")" = "payload" ] || return 1
+  return 0
+}
+
+test_add_symlinked_parent() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$DOTFILES_DIR/pidir"
+  echo "payload" > "$DOTFILES_DIR/pidir/hooks.ts"
+  ln -s "$DOTFILES_DIR/pidir" "$HOME/pidir"
+
+  "$BIN" add --yes "$HOME/pidir/hooks.ts" >out 2>&1 || true
+  grep -q "already resolves into the repo" out || { echo "not detected"; return 1; }
+  [ -f "$DOTFILES_DIR/pidir/hooks.ts" ] || { echo "file lost by self-move"; return 1; }
+  [ "$(cat "$DOTFILES_DIR/pidir/hooks.ts")" = "payload" ] || return 1
+  return 0
+}
+
 test_pipe_rejected() {
   "$BIN" init --repo "$REMOTE_DIR" >/dev/null
   touch "$HOME/my|file"
@@ -245,6 +276,8 @@ run_test "SSH remote warning" test_ssh_warning
 run_test "Rm restores file" test_rm_restores
 run_test "Add outside HOME rejected" test_add_outside_home
 run_test "Nested gitignore honored" test_nested_gitignore
+run_test "rm refuses silent delete via symlinked parent" test_rm_symlinked_parent
+run_test "add refuses path already inside repo via symlink" test_add_symlinked_parent
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES of $TOTAL tests failed."

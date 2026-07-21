@@ -121,14 +121,17 @@ All six commands are variations on: *read manifest → compute state → act →
 ```
 add <path>       resolve to $HOME-relative
                  → reject unrepresentable (| or newline)
+                 → reject if already inside repo via symlinked ancestor
                  → refuse nested .git (dir)
                  → audit + confirm (dir)
+                 → warn + confirm if over 50MB (file)
                  → mv into repo, symlink back
                  → append manifest entry
                  → commit manifest + path only
 
 link             for each manifest entry present in repo:
                  → already correctly linked? skip
+                 → nested .git inside a dir entry? skip (likely empty gitlink)
                  → real file in the way? mv to *.bak
                  → symlink repo → $HOME
 
@@ -140,7 +143,8 @@ status           per entry: linked / linkable / addable here / absent / conflict
                  → scan for machine-specific absolute symlinks
                  → report dirty tree
 
-rm <path>        restore real content to $HOME
+rm <path>        same file via symlinked ancestor? confirm, then delete
+                 → restore real content to $HOME
                  → drop manifest entry
                  → commit manifest + path only
 ```
@@ -157,8 +161,14 @@ user explicitly asked to commit everything under that message.
 
 The properties everything else is built to preserve:
 
-1. **Nothing in `$HOME` is ever destroyed.** `link` backs conflicts up to `*.bak`;
-   `rm` restores real content before dropping the entry.
+1. **Real config files in `$HOME` are never silently destroyed.** `link` backs a
+   conflicting real file up to `*.bak` before symlinking over it; `rm` restores
+   real content before dropping the entry. Three carve-outs, stated because an
+   overclaimed invariant is worse than an honest one: an existing `*.bak` is
+   replaced by a newer backup, a symlink in the way is removed rather than
+   backed up (it holds no content), and if a path resolves into the repo through
+   a symlinked ancestor there is no separate local copy to preserve — `rm`
+   detects that case and asks before deleting.
 2. **A file is either a real file or a symlink into the repo — never a copy.**
    Copies drift; symlinks cannot.
 3. **The manifest is the only source of truth for what is tracked.** Nothing
