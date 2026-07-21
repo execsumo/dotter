@@ -259,6 +259,155 @@ test_add_normal_file_newline_check() {
   [ -f "$DOTFILES_DIR/normalfile" ] || return 1
 }
 
+# Builds a directory carrying one instance of every category the audit detects.
+# Used by both the porcelain tests and the drift guard below.
+make_risky_dir() {
+  local d="$1"
+  mkdir -p "$d/nested"
+  echo '{"token":"x"}' > "$d/auth.json"
+  echo 'real config'   > "$d/config.toml"
+  echo 'noise'         > "$d/app.log"
+  : > "$d/store.sqlite3"
+  # Sparse: 60MB apparent size without writing 60MB.
+  dd if=/dev/null of="$d/blob.bin" bs=1 count=0 seek=60000000 2>/dev/null
+  ln -s /opt/elsewhere/thing "$d/nested/stray"
+}
+
+audit_porcelain() {
+  "$BIN" audit --porcelain "$@" 2>/dev/null || true
+}
+
+test_audit_flags_every_category() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  make_risky_dir "$HOME/risky"
+
+  local out
+  out="$(audit_porcelain "$HOME/risky")"
+
+  local flag
+  for flag in secret large log db foreign-symlink; do
+    if ! printf '%s\n' "$out" | awk -F'|' -v f="$flag" '$2==f' | grep -q .; then
+      echo "missing flag: $flag"
+      printf '%s\n' "$out"
+      return 1
+    fi
+  done
+
+  # Format contract: exactly 4 pipe-delimited fields, severity from a fixed set.
+  if printf '%s\n' "$out" | awk -F'|' 'NF!=4 || ($3!="high" && $3!="low")' | grep -q .; then
+    echo "malformed porcelain line"
+    printf '%s\n' "$out"
+    return 1
+  fi
+
+  # Paths must come back $HOME-relative, never absolute.
+  if printf '%s\n' "$out" | awk -F'|' '$4 ~ /^\//' | grep -q .; then
+    echo "absolute path leaked into detail field"
+    return 1
+  fi
+}
+
+test_audit_nested_git_high() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$HOME/proj/.git"
+  local out
+  out="$(audit_porcelain "$HOME/proj")"
+  printf '%s\n' "$out" | grep -q '|nested-git|high|' || return 1
+}
+
+test_audit_clean_dir_silent() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$HOME/tidy"
+  echo 'setting = 1' > "$HOME/tidy/config.toml"
+  local out
+  out="$(audit_porcelain "$HOME/tidy")"
+  if [ -n "$out" ]; then
+    echo "clean dir produced findings: $out"
+    return 1
+  fi
+}
+
+# With no dir| entries there is nothing to re-audit. That must SAY so — a silent
+# exit 0 here reads as "audited everything, all clear", which is the exact
+# failure mode this tool treats as worse than a crash.
+test_audit_empty_is_not_silent() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  echo "content" > "$HOME/plainfile"
+  "$BIN" add "$HOME/plainfile" >/dev/null
+  # Capture first, then grep: `grep -q` exits on match and SIGPIPEs the
+  # producer, which `pipefail` would report as a failed pipeline.
+  local out
+  out="$("$BIN" audit 2>&1)"
+  printf '%s\n' "$out" | grep -qi "nothing to re-audit" || return 1
+}
+
+test_audit_no_args_covers_dir_entries() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  make_risky_dir "$HOME/risky"
+  mkdir -p "$DOTFILES_DIR/risky"
+  cp "$HOME/risky/auth.json" "$DOTFILES_DIR/risky/"
+  echo "dir|risky|risky" >> "$DOTFILES_DIR/dotfiles.manifest"
+  local out
+  out="$(audit_porcelain)"
+  printf '%s\n' "$out" | grep -q '^risky|secret|high|' || return 1
+}
+
+# The drift guard. audit_dir() (prose, used by `add`) and audit_findings()
+# (porcelain, used by `audit`) carry separate copies of the detection patterns —
+# a deliberate trade so the highest-stakes code path stayed untouched. This
+# asserts they still agree, so a pattern added to one and not the other fails
+# here instead of silently going unreported on one path.
+test_audit_agrees_with_add_audit() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  make_risky_dir "$HOME/risky"
+
+  local prose porcelain
+  prose="$(printf 'no\n' | "$BIN" add "$HOME/risky" 2>&1 || true)"
+  porcelain="$(audit_porcelain "$HOME/risky")"
+
+  has_flag() { printf '%s\n' "$porcelain" | awk -F'|' -v f="$1" '$2==f' | grep -q .; }
+
+  # Each pair: a phrase audit_dir prints, and the flag audit_findings emits.
+  if printf '%s\n' "$prose" | grep -qi "credential"; then
+    has_flag secret || { echo "add flagged credentials; audit did not"; return 1; }
+  else
+    echo "add did not flag credentials on the fixture"; return 1
+  fi
+
+  if printf '%s\n' "$prose" | grep -qi "over ${LARGE_FILE_MB:-50}MB\|files over"; then
+    has_flag large || { echo "add flagged large files; audit did not"; return 1; }
+  else
+    echo "add did not flag large files on the fixture"; return 1
+  fi
+
+  if printf '%s\n' "$prose" | grep -qi "logs/databases"; then
+    has_flag log || has_flag db || { echo "add flagged logs/db; audit did not"; return 1; }
+  fi
+
+  if printf '%s\n' "$prose" | grep -qi "symlinks to absolute paths"; then
+    has_flag foreign-symlink || { echo "add flagged stray symlinks; audit did not"; return 1; }
+  fi
+}
+
+# The additive gate from the plan: `audit` must not have disturbed the commands
+# that existed before it.
+test_audit_did_not_change_command_surface() {
+  local out
+  out="$("$BIN" help)"
+  local c
+  for c in init add link sync status rm; do
+    printf '%s\n' "$out" | grep -qE "^  $c " || { echo "usage lost: $c"; return 1; }
+  done
+  printf '%s\n' "$out" | grep -q "audit" || return 1
+}
+
+run_test "Audit flags every category" test_audit_flags_every_category
+run_test "Audit reports nested .git as high" test_audit_nested_git_high
+run_test "Audit stays silent on a clean dir" test_audit_clean_dir_silent
+run_test "Audit with nothing to check says so" test_audit_empty_is_not_silent
+run_test "Audit with no args covers dir entries" test_audit_no_args_covers_dir_entries
+run_test "Audit agrees with add-time audit" test_audit_agrees_with_add_audit
+run_test "Audit did not change command surface" test_audit_did_not_change_command_surface
 run_test "Pipe in filename rejected" test_pipe_rejected
 run_test "Intra-repo absolute symlink not flagged" test_intra_repo_symlink
 run_test "Init prefers main over alphabetically-earlier branch" test_init_prefers_main
