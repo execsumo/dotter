@@ -1,0 +1,738 @@
+#!/usr/bin/env bash
+# dotfiles — manifest-driven dotfiles management over plain git + symlinks.
+#
+# Runs identically on macOS and Linux, from any machine. There is no designated
+# "source of truth" host: the git repo is the source of truth and every machine
+# is a peer that can add, link, and sync.
+#
+# Portability: macOS ships bash 3.2. No bash 4+ syntax anywhere in this file —
+# no ${VAR,,}, no declare -A, no mapfile/readarray.
+set -euo pipefail
+
+VERSION="1.0.0"
+
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
+MANIFEST="$DOTFILES_DIR/dotfiles.manifest"
+
+# Directories larger than this (or single files larger than this) get flagged
+# during `add` audit. GitHub hard-rejects blobs over 100MB.
+LARGE_FILE_MB=50
+
+if [ -t 1 ]; then
+  GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
+  CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+else
+  GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; RESET=''
+fi
+
+step() { echo -e "\n${CYAN}==>${RESET} ${BOLD}$*${RESET}"; }
+ok()   { echo -e "  ${GREEN}✓${RESET} $*"; }
+warn() { echo -e "  ${YELLOW}!${RESET} $*"; }
+bad()  { echo -e "  ${RED}✗${RESET} $*"; }
+info() { echo -e "    $*"; }
+die()  { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ── Repo helpers ──────────────────────────────────────────────────────────────
+
+have_repo() { [ -d "$DOTFILES_DIR/.git" ]; }
+
+require_repo() {
+  have_repo || die "no dotfiles repo at $DOTFILES_DIR — run 'dotfiles init' first"
+}
+
+git_d() { git -C "$DOTFILES_DIR" "$@"; }
+
+# gh auth installs a git credential helper for HTTPS on login, so HTTPS remotes
+# work without an SSH key registered on the account. SSH remotes fail with
+# "Permission denied (publickey)" on machines that never registered one — which
+# includes every fresh container. Refuse them rather than fail confusingly later.
+check_https_remote() {
+  local url
+  url="$(git_d remote get-url origin 2>/dev/null || true)"
+  case "$url" in
+    git@*|ssh://*)
+      warn "origin uses an SSH remote: $url"
+      info "SSH needs a key registered on the account; fresh machines rarely have one."
+      info "Switch to HTTPS so the gh credential helper handles auth:"
+      info "  git -C $DOTFILES_DIR remote set-url origin https://github.com/<user>/<repo>"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+require_identity() {
+  local n e
+  n="$(git config user.name 2>/dev/null || true)"
+  e="$(git config user.email 2>/dev/null || true)"
+  if [ -z "$n" ] || [ -z "$e" ]; then
+    die "git identity not set — run:
+    git config --global user.name  \"Your Name\"
+    git config --global user.email \"you@example.com\""
+  fi
+}
+
+# ── Manifest helpers ──────────────────────────────────────────────────────────
+# Format: type|relpath|label   (type = file | dir; relpath is relative to $HOME)
+# Comments and blank lines ignored.
+
+manifest_lines() {
+  [ -f "$MANIFEST" ] || return 0
+  grep -vE '^[[:space:]]*(#|$)' "$MANIFEST" || true
+}
+
+manifest_type_of() {
+  local rel="$1" t r
+  while IFS='|' read -r t r _; do
+    [ "$r" = "$rel" ] && { printf '%s' "$t"; return 0; }
+  done <<EOF
+$(manifest_lines)
+EOF
+  return 1
+}
+
+manifest_has() { manifest_type_of "$1" >/dev/null 2>&1; }
+
+# Append an entry, keeping the file tidy. Entries are appended under a trailing
+# "# Added by 'dotfiles add'" section so hand-curated grouping above is left alone.
+manifest_append() {
+  local type="$1" rel="$2" label="$3"
+  [ -f "$MANIFEST" ] || manifest_seed
+  if ! grep -q "^# Added by 'dotfiles add'" "$MANIFEST" 2>/dev/null; then
+    printf '\n%s\n' "# Added by 'dotfiles add'" >> "$MANIFEST"
+  fi
+  printf '%s|%s|%s\n' "$type" "$rel" "$label" >> "$MANIFEST"
+}
+
+manifest_remove() {
+  local rel="$1" tmp
+  tmp="$MANIFEST.tmp.$$"
+  # Match only the relpath field, so a path is never removed by prefix accident.
+  awk -F'|' -v rel="$rel" '
+    /^[[:space:]]*(#|$)/ { print; next }
+    $2 == rel { next }
+    { print }
+  ' "$MANIFEST" > "$tmp"
+  mv "$tmp" "$MANIFEST"
+}
+
+manifest_seed() {
+  cat > "$MANIFEST" <<'EOF'
+# Single source of truth for tracked dotfiles.
+# Lives in the dotfiles repo itself so it is editable from any machine.
+#
+# Format:  type|relpath|label
+#   type    = file | dir   (dirs are symlinked whole; files individually)
+#   relpath = path relative to $HOME (repo mirrors $HOME exactly)
+#   label   = human-readable description
+# Blank lines and lines starting with '#' are ignored.
+#
+# Prefer individual `file|` entries over `dir|`. A whole-directory entry sweeps
+# in whatever the owning tool writes there later — auth tokens, logs, sockets,
+# vendored binaries. `dotfiles add` audits a directory before accepting it, but
+# that audit is a snapshot, not a guarantee.
+EOF
+}
+
+# ── Path helpers ──────────────────────────────────────────────────────────────
+
+# Resolve an argument to a path relative to $HOME. Lexical on purpose: resolving
+# symlinks would defeat the "is this already linked?" checks, and would break if
+# $HOME itself is a symlink.
+to_rel() {
+  local p="$1"
+  case "$p" in
+    "~/"*) p="$HOME/${p#\~/}" ;;
+    "~")   p="$HOME" ;;
+    /*)    ;;
+    *)     p="$PWD/$p" ;;
+  esac
+  while [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  case "$p" in
+    "$HOME"/*) printf '%s' "${p#"$HOME"/}" ; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_linked() {
+  local rel="$1"
+  local home_path="$HOME/$rel"
+  local repo_path="$DOTFILES_DIR/$rel"
+  [ -L "$home_path" ] && [ "$(readlink "$home_path")" = "$repo_path" ]
+}
+
+# ── Directory audit ───────────────────────────────────────────────────────────
+# A whole-directory entry is the single highest-risk thing this tool does. We
+# learned this the hard way: a config dir held a live API key plus 250MB of
+# vendored binaries, and another swept in logs, sockets, and UI session state.
+# Refuse the clearly-broken cases, loudly report the suspicious ones, and make
+# the user type "yes" rather than defaulting to trust.
+audit_dir() {
+  local src="$1" rel="$2"
+  local problems=0
+
+  # Hard refusal: a nested git repo becomes a submodule gitlink — a bare commit
+  # pointer, not content. It pushes as an empty directory on clone, silently.
+  if [ -e "$src/.git" ]; then
+    bad "$rel/ contains its own .git — refusing"
+    info "Git would record this as a submodule gitlink (a bare commit hash), not"
+    info "real file content. It clones back as an EMPTY directory, with no error."
+    info "Disconnect it first (move $src/.git aside) if you want it tracked."
+    return 1
+  fi
+
+  local size_kb size_h
+  size_kb="$(du -sk "$src" 2>/dev/null | awk '{print $1}')"
+  size_h="$(du -sh "$src" 2>/dev/null | awk '{print $1}')"
+  local nfiles
+  nfiles="$(find "$src" -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+  echo ""
+  info "${BOLD}Audit of $rel/${RESET}"
+  info "size: ${size_h:-?}   files: ${nfiles:-?}"
+
+  # A nested .gitignore is the owning tool's own exclusion policy. It travels
+  # with the directory and keeps protecting it once nested in the dotfiles repo.
+  # Don't reinvent rules the source tool already maintains.
+  if [ -f "$src/.gitignore" ]; then
+    ok "ships its own .gitignore — it will travel with the directory and keep applying"
+  fi
+
+  local big
+  big="$(find "$src" -type f -size +${LARGE_FILE_MB}M 2>/dev/null | head -20 || true)"
+  if [ -n "$big" ]; then
+    bad "files over ${LARGE_FILE_MB}MB (GitHub hard-rejects anything over 100MB):"
+    printf '%s\n' "$big" | sed "s|^$src|      $rel|"
+    problems=$((problems + 1))
+  fi
+
+  local secrets
+  secrets="$(find "$src" -type f \( \
+      -name 'auth*.json' -o -name '*credential*' -o -name '*.pem' -o -name '*.key' \
+      -o -name '.env' -o -name '*token*' -o -name '*secret*' -o -name 'id_rsa*' \
+    \) 2>/dev/null | head -20 || true)"
+  if [ -n "$secrets" ]; then
+    bad "possible credential/auth files:"
+    printf '%s\n' "$secrets" | sed "s|^$src|      $rel|"
+    problems=$((problems + 1))
+  fi
+
+  local runtime
+  runtime="$(find "$src" \( -type s -o -type p \) 2>/dev/null | head -10 || true)"
+  if [ -n "$runtime" ]; then
+    bad "sockets/pipes (live runtime state, not config):"
+    printf '%s\n' "$runtime" | sed "s|^$src|      $rel|"
+    problems=$((problems + 1))
+  fi
+
+  local logs
+  logs="$(find "$src" -type f \( -name '*.log' -o -name '*.sock' -o -name '*.db' \
+    -o -name '*.sqlite*' \) 2>/dev/null | head -10 || true)"
+  if [ -n "$logs" ]; then
+    warn "logs/databases (usually runtime state):"
+    printf '%s\n' "$logs" | sed "s|^$src|      $rel|"
+  fi
+
+  # Absolute symlinks escaping $HOME are machine-specific and break on clone.
+  local badlinks
+  badlinks="$(find "$src" -type l 2>/dev/null | while read -r l; do
+    t="$(readlink "$l")"
+    case "$t" in
+      /*) case "$t" in "$HOME"/*) ;; *) echo "$l -> $t" ;; esac ;;
+    esac
+  done | head -10)"
+  if [ -n "$badlinks" ]; then
+    warn "symlinks to absolute paths outside \$HOME (will not resolve elsewhere):"
+    printf '%s\n' "$badlinks" | sed "s|^$src|      $rel|"
+  fi
+
+  echo ""
+  info "Top-level contents:"
+  ls -A "$src" 2>/dev/null | head -25 | sed 's/^/      /'
+  [ "$(ls -A "$src" 2>/dev/null | wc -l | tr -d ' ')" -gt 25 ] && info "      ..."
+
+  echo ""
+  if [ "$problems" -gt 0 ]; then
+    warn "${BOLD}This directory mixes real config with state you probably don't want tracked.${RESET}"
+    info "Strongly consider adding only the specific config files instead:"
+    info "  dotfiles add ~/$rel/<the-one-config-file>"
+  else
+    info "Nothing obviously unsafe found — but this is a snapshot, not a guarantee."
+    info "The owning tool may write auth or state here later."
+  fi
+  return 0
+}
+
+# Reads from /dev/tty, never stdin: every caller sits inside a `while read`
+# loop whose stdin is the item list. Reading stdin here would silently eat the
+# next path instead of prompting.
+confirm() {
+  local prompt="$1" reply
+  if [ "${ASSUME_YES:-0}" = "1" ]; then return 0; fi
+  if [ ! -r /dev/tty ]; then
+    warn "no TTY and --yes not given — declining: $prompt"
+    return 1
+  fi
+  printf "  %s [y/N]: " "$prompt" > /dev/tty
+  read -r reply < /dev/tty || reply=n
+  case "$(lower "${reply:-n}")" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_init() {
+  local repo="" ; ASSUME_YES="${ASSUME_YES:-0}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --yes|-y|--non-interactive) ASSUME_YES=1; shift ;;
+      *) die "init: unknown option $1" ;;
+    esac
+  done
+
+  step "Dotfiles repo"
+
+  if have_repo; then
+    ok "Repo already present at $DOTFILES_DIR"
+    check_https_remote || true
+    [ -f "$MANIFEST" ] || { manifest_seed; ok "Seeded manifest"; }
+    ensure_gitignore
+    return 0
+  fi
+
+  # Derive the default repo URL from gh only if we weren't told one. gh is a
+  # convenience here, never a requirement for the add/link/sync hot path.
+  if [ -z "$repo" ]; then
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      local ghuser
+      ghuser="$(gh api /user --jq '.login' 2>/dev/null || true)"
+      [ -n "$ghuser" ] && repo="https://github.com/${ghuser}/dotfiles"
+    fi
+  fi
+  [ -n "$repo" ] || die "no repo URL — pass --repo https://github.com/<user>/dotfiles"
+
+  case "$repo" in
+    git@*|ssh://*) die "use an HTTPS remote, not SSH: $repo
+    gh's credential helper handles HTTPS auth; SSH needs a registered key." ;;
+  esac
+
+  # git ls-remote is the portable existence probe — works with only git + creds,
+  # so a machine without gh can still clone an existing repo.
+  if git ls-remote "$repo" >/dev/null 2>&1; then
+    ok "Found $repo"
+    git clone "$repo" "$DOTFILES_DIR"
+  else
+    warn "No repo reachable at $repo"
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      if confirm "Create it as a private GitHub repo now?"; then
+        local slug="${repo##*/}"
+        gh repo create "$slug" --private >/dev/null 2>&1 \
+          || die "gh repo create failed — create it manually and re-run"
+        ok "Created private repo $repo"
+      else
+        die "aborted"
+      fi
+    else
+      warn "gh not available — create the repo manually, then re-run 'dotfiles init'"
+      if ! confirm "Initialise a local-only repo now (push later)?"; then
+        die "aborted"
+      fi
+    fi
+    # -b main explicitly: never rely on the machine's init.defaultBranch.
+    git init -b main "$DOTFILES_DIR"
+    git_d remote add origin "$repo"
+    ok "Initialised $DOTFILES_DIR on branch main"
+  fi
+
+  ensure_gitignore
+  if [ ! -f "$MANIFEST" ]; then
+    manifest_seed
+    ok "Seeded manifest at $MANIFEST"
+  fi
+
+  if [ -n "$(git_d status --porcelain 2>/dev/null)" ]; then
+    require_identity
+    git_d add .gitignore dotfiles.manifest 2>/dev/null || true
+    git_d commit -qm "dotfiles: initialise manifest and gitignore" || true
+  fi
+  ok "Ready. Next: 'dotfiles link' to apply, or 'dotfiles add <path>' to track something."
+}
+
+# Top-level backstop for junk not covered by any nested .gitignore.
+ensure_gitignore() {
+  local gi="$DOTFILES_DIR/.gitignore"
+  local entry
+  [ -f "$gi" ] || : > "$gi"
+  for entry in '.DS_Store' '*.log' '*.sock' '*.swp'; do
+    grep -qxF "$entry" "$gi" 2>/dev/null || printf '%s\n' "$entry" >> "$gi"
+  done
+}
+
+cmd_add() {
+  local label="" paths=""
+  ASSUME_YES="${ASSUME_YES:-0}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --label) label="${2:-}"; shift 2 ;;
+      --yes|-y) ASSUME_YES=1; shift ;;
+      -*) die "add: unknown option $1" ;;
+      *) paths="$paths$1
+"; shift ;;
+    esac
+  done
+  [ -n "$paths" ] || die "usage: dotfiles add [--label TEXT] [--yes] <path>..."
+
+  require_repo
+  require_identity
+  check_https_remote || true
+
+  local added="" arg rel src dest type
+  while IFS= read -r arg; do
+    [ -n "$arg" ] || continue
+
+    rel="$(to_rel "$arg")" || { bad "$arg is outside \$HOME — not trackable"; continue; }
+    src="$HOME/$rel"
+    dest="$DOTFILES_DIR/$rel"
+
+    step "Adding $rel"
+
+    if [ -L "$src" ]; then
+      if is_linked "$rel"; then
+        ok "already linked into the repo"
+        manifest_has "$rel" || {
+          type="dir"; [ -f "$src" ] && type="file"
+          manifest_append "$type" "$rel" "${label:-$rel}"
+          added="$added$rel
+"
+          ok "added missing manifest entry"
+        }
+      else
+        warn "is a symlink pointing elsewhere ($(readlink "$src")) — skipping"
+      fi
+      continue
+    fi
+
+    [ -e "$src" ] || { bad "does not exist on this machine"; continue; }
+
+    if [ -d "$src" ]; then
+      type="dir"
+    elif [ -f "$src" ]; then
+      type="file"
+    else
+      bad "not a regular file or directory — skipping"
+      continue
+    fi
+
+    if manifest_has "$rel" && [ -e "$dest" ]; then
+      warn "already tracked and present in the repo — run 'dotfiles link' instead"
+      continue
+    fi
+
+    if [ "$type" = "dir" ]; then
+      audit_dir "$src" "$rel" || continue
+      confirm "Track the whole directory $rel/ ?" || { warn "skipped $rel/"; continue; }
+    else
+      local fsize
+      fsize="$(find "$src" -size +${LARGE_FILE_MB}M 2>/dev/null || true)"
+      if [ -n "$fsize" ]; then
+        bad "$rel is over ${LARGE_FILE_MB}MB — GitHub rejects blobs over 100MB"
+        confirm "Add it anyway?" || { warn "skipped $rel"; continue; }
+      fi
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    mv "$src" "$dest"
+    ln -sfn "$dest" "$src"
+    manifest_has "$rel" || manifest_append "$type" "$rel" "${label:-$rel}"
+    ok "moved into repo and symlinked back"
+    added="$added$rel
+"
+  done <<EOF
+$paths
+EOF
+
+  [ -n "$added" ] || { echo ""; warn "Nothing added."; return 0; }
+
+  step "Committing"
+  local list
+  list="$(printf '%s' "$added" | tr '\n' ' ' | sed 's/ $//')"
+  git_d add -- dotfiles.manifest
+  while IFS= read -r rel; do
+    [ -n "$rel" ] && git_d add -- "$rel"
+  done <<EOF
+$added
+EOF
+  git_d commit -qm "dotfiles: add $list"
+  ok "Committed: $list"
+  info "Run 'dotfiles sync' to push."
+}
+
+cmd_link() {
+  require_repo
+  step "Linking dotfiles from $DOTFILES_DIR"
+
+  local linked="" skipped="" type rel label src dest
+  while IFS='|' read -r type rel label; do
+    [ -n "$rel" ] || continue
+    src="$DOTFILES_DIR/$rel"
+    dest="$HOME/$rel"
+
+    if [ ! -e "$src" ]; then
+      skipped="$skipped$rel (not in repo)
+"
+      continue
+    fi
+
+    if is_linked "$rel"; then
+      continue
+    fi
+
+    # A dir entry that arrived carrying its own .git would have been recorded as
+    # a gitlink and cloned back empty. Catch it here too rather than linking a
+    # hollow directory over real local config.
+    if [ "$type" = "dir" ] && [ -e "$src/.git" ]; then
+      warn "$rel/ contains a nested .git in the repo — skipping (likely an empty gitlink)"
+      continue
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    # Back up rather than overwrite: never destroy local config we didn't create.
+    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+      mv "$dest" "${dest}.bak"
+      warn "$rel existed locally — backed up to ${rel}.bak"
+    elif [ -L "$dest" ]; then
+      rm -f "$dest"
+    fi
+    ln -sfn "$src" "$dest"
+    linked="$linked$rel
+"
+  done <<EOF
+$(manifest_lines)
+EOF
+
+  if [ -n "$linked" ]; then
+    ok "Linked: $(printf '%s' "$linked" | tr '\n' ' ' | sed 's/ $//')"
+  else
+    ok "Everything already linked — nothing to do."
+  fi
+  if [ -n "$skipped" ]; then
+    echo ""
+    warn "In the manifest but not in the repo (add them from a machine that has them):"
+    printf '%s' "$skipped" | sed 's/^/      /'
+  fi
+}
+
+cmd_sync() {
+  require_repo
+  require_identity
+  local msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m|--message) msg="${2:-}"; shift 2 ;;
+      *) die "sync: unknown option $1" ;;
+    esac
+  done
+
+  step "Syncing $DOTFILES_DIR"
+  check_https_remote || true
+
+  if [ -n "$(git_d status --porcelain)" ]; then
+    if [ -n "$msg" ]; then
+      git_d add -A
+      git_d commit -qm "$msg"
+      ok "Committed local changes: $msg"
+    else
+      warn "Working tree has uncommitted changes:"
+      git_d status --short | sed 's/^/      /'
+      info "Commit them with: dotfiles sync -m \"your message\""
+    fi
+  fi
+
+  # A repo can legitimately exist with zero commits and/or no upstream tracking
+  # branch — e.g. an interrupted earlier run. `git pull --ff-only` hard-fails in
+  # that state, which aborts the whole script under set -e. Guard both cases.
+  if ! git_d rev-parse --verify -q HEAD >/dev/null; then
+    warn "No commits yet — skipping pull"
+  elif ! git_d rev-parse --abbrev-ref -q '@{u}' >/dev/null 2>&1; then
+    warn "No upstream tracking branch yet — skipping pull"
+  else
+    info "Pulling"
+    git_d pull --ff-only || {
+      bad "pull failed (diverged history?) — resolve manually in $DOTFILES_DIR"
+      return 1
+    }
+    ok "Up to date with remote"
+  fi
+
+  if ! git_d remote get-url origin >/dev/null 2>&1; then
+    warn "No 'origin' remote — nothing to push"
+    return 0
+  fi
+  if ! git_d rev-parse --verify -q HEAD >/dev/null; then
+    warn "No commits to push"
+    return 0
+  fi
+
+  info "Pushing"
+  git_d push -u origin HEAD
+  ok "Pushed"
+}
+
+cmd_status() {
+  require_repo
+  step "Dotfiles status ($DOTFILES_DIR)"
+
+  local type rel label src dest n_linked=0 n_unlinked=0 n_missing=0 n_absent=0
+  while IFS='|' read -r type rel label; do
+    [ -n "$rel" ] || continue
+    src="$DOTFILES_DIR/$rel"
+    dest="$HOME/$rel"
+
+    if is_linked "$rel"; then
+      ok "$rel"
+      n_linked=$((n_linked + 1))
+    elif [ ! -e "$src" ]; then
+      warn "$rel — in manifest, not in repo"
+      n_missing=$((n_missing + 1))
+    elif [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+      warn "$rel — in repo, not linked here (run 'dotfiles link')"
+      n_unlinked=$((n_unlinked + 1))
+    else
+      bad "$rel — local file exists but is not a link to the repo"
+      n_absent=$((n_absent + 1))
+    fi
+  done <<EOF
+$(manifest_lines)
+EOF
+
+  echo ""
+  info "${n_linked} linked, ${n_unlinked} linkable, ${n_missing} missing from repo, ${n_absent} conflicting"
+
+  # Known limitation: directory entries accumulate absolute symlinks written by
+  # externally-managed tooling. No gitignore pattern catches these — they need
+  # periodic manual pruning, so report them rather than pretend to fix them.
+  local stray
+  stray="$(find "$DOTFILES_DIR" -type l 2>/dev/null | while read -r l; do
+    t="$(readlink "$l")"
+    case "$t" in
+      /*) case "$t" in "$DOTFILES_DIR"/*|"$HOME"/*) ;; *) echo "$l -> $t" ;; esac ;;
+    esac
+  done)"
+  if [ -n "$stray" ]; then
+    echo ""
+    warn "Machine-specific absolute symlinks tracked in the repo (prune manually):"
+    printf '%s\n' "$stray" | sed "s|$DOTFILES_DIR/|      |"
+  fi
+
+  echo ""
+  local dirty
+  dirty="$(git_d status --porcelain | wc -l | tr -d ' ')"
+  if [ "$dirty" != "0" ]; then
+    warn "$dirty uncommitted change(s) — 'dotfiles sync -m \"msg\"' to commit and push"
+  else
+    ok "Working tree clean"
+  fi
+}
+
+cmd_rm() {
+  local paths=""
+  ASSUME_YES="${ASSUME_YES:-0}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) ASSUME_YES=1; shift ;;
+      -*) die "rm: unknown option $1" ;;
+      *) paths="$paths$1
+"; shift ;;
+    esac
+  done
+  [ -n "$paths" ] || die "usage: dotfiles rm [--yes] <path>..."
+
+  require_repo
+  require_identity
+
+  local removed="" arg rel src dest
+  while IFS= read -r arg; do
+    [ -n "$arg" ] || continue
+    rel="$(to_rel "$arg")" || { bad "$arg is outside \$HOME"; continue; }
+    src="$DOTFILES_DIR/$rel"
+    dest="$HOME/$rel"
+
+    step "Untracking $rel"
+    manifest_has "$rel" || warn "not in the manifest (removing repo copy anyway if present)"
+
+    # Restore the real content to $HOME so the machine keeps working config.
+    if is_linked "$rel" && [ -e "$src" ]; then
+      rm -f "$dest"
+      mv "$src" "$dest"
+      ok "restored real file to $dest"
+    elif [ -e "$src" ]; then
+      warn "$dest is not a link to the repo — leaving it alone, removing repo copy"
+      rm -rf "$src"
+    fi
+
+    manifest_remove "$rel"
+    removed="$removed$rel
+"
+  done <<EOF
+$paths
+EOF
+
+  [ -n "$removed" ] || return 0
+
+  local list
+  list="$(printf '%s' "$removed" | tr '\n' ' ' | sed 's/ $//')"
+  git_d add -A
+  git_d commit -qm "dotfiles: remove $list"
+  ok "Committed removal: $list"
+  info "Run 'dotfiles sync' to push."
+}
+
+usage() {
+  cat <<EOF
+dotfiles ${VERSION} — manifest-driven dotfiles over plain git + symlinks
+
+USAGE
+  dotfiles <command> [options]
+
+COMMANDS
+  init [--repo URL] [--yes]   Clone or create the dotfiles repo (~/.dotfiles)
+  add [--label T] [--yes] P.. Move a file/dir into the repo, symlink it back,
+                              record it in the manifest, and commit
+  link                        Symlink everything in the manifest that is in the
+                              repo but not yet linked here (backs up conflicts)
+  sync [-m MESSAGE]           Pull remote changes, then push local commits
+  status                      Per-entry link state plus repo health
+  rm [--yes] <path>...        Untrack: restore the real file, drop the entry
+  help | version
+
+ENVIRONMENT
+  DOTFILES_DIR   Repo location (default: \$HOME/.dotfiles)
+
+NOTES
+  Runs from any machine — laptop, VPS, or container. There is no designated
+  source-of-truth host; the git repo is the source of truth.
+
+  add/link/sync/status/rm need only git. 'gh' is used solely by 'init' to create
+  a repo that does not exist yet.
+EOF
+}
+
+main() {
+  [ $# -gt 0 ] || { usage; exit 1; }
+  local cmd="$1"; shift
+  case "$cmd" in
+    init)            cmd_init "$@" ;;
+    add)             cmd_add "$@" ;;
+    link|apply)      cmd_link "$@" ;;
+    sync)            cmd_sync "$@" ;;
+    status)          cmd_status "$@" ;;
+    rm|remove)       cmd_rm "$@" ;;
+    help|--help|-h)  usage ;;
+    version|--version) echo "dotfiles $VERSION" ;;
+    *) die "unknown command: $cmd (try 'dotfiles help')" ;;
+  esac
+}
+
+main "$@"
