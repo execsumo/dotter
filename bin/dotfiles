@@ -638,6 +638,7 @@ cmd_status() {
   step "Dotfiles status ($DOTFILES_DIR)"
 
   local type rel label src dest n_linked=0 n_unlinked=0 n_missing=0 n_absent=0
+  local n_addable=0 addable=""
   while IFS='|' read -r type rel label; do
     [ -n "$rel" ] || continue
     src="$DOTFILES_DIR/$rel"
@@ -647,8 +648,17 @@ cmd_status() {
       ok "$rel"
       n_linked=$((n_linked + 1))
     elif [ ! -e "$src" ]; then
-      warn "$rel — in manifest, not in repo"
-      n_missing=$((n_missing + 1))
+      # Two different situations with two different fixes: the file exists here
+      # and is waiting to be contributed, or it simply isn't on this machine.
+      if [ -e "$dest" ] || [ -L "$dest" ]; then
+        warn "$rel — here but not in repo yet (run: dotfiles add ~/$rel)"
+        addable="$addable$rel
+"
+        n_addable=$((n_addable + 1))
+      else
+        info "$rel — not in repo, not on this machine"
+        n_missing=$((n_missing + 1))
+      fi
     elif [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
       warn "$rel — in repo, not linked here (run 'dotfiles link')"
       n_unlinked=$((n_unlinked + 1))
@@ -661,7 +671,13 @@ $(manifest_lines)
 EOF
 
   echo ""
-  info "${n_linked} linked, ${n_unlinked} linkable, ${n_missing} missing from repo, ${n_absent} conflicting"
+  info "${n_linked} linked, ${n_unlinked} linkable, ${n_addable} addable from here, ${n_missing} absent, ${n_absent} conflicting"
+
+  if [ -n "$addable" ]; then
+    echo ""
+    info "Contribute everything this machine has that the repo does not:"
+    info "  dotfiles add $(printf '%s' "$addable" | sed "s|^|~/|" | tr '\n' ' ')"
+  fi
 
   # Known limitation: directory entries accumulate absolute symlinks written by
   # externally-managed tooling. No gitignore pattern catches these — they need
