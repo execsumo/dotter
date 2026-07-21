@@ -163,6 +163,29 @@ is_linked() {
   [ -L "$home_path" ] && [ "$(readlink "$home_path")" = "$repo_path" ]
 }
 
+# List symlinks under $1 whose target is an absolute path NOT under $2.
+# These are machine-specific and will dangle anywhere else.
+#
+# Defined as a function rather than inlined at the call sites on purpose: bash
+# 3.2 mis-parses a `case` block nested inside `$( )` ("syntax error near
+# unexpected token `newline'"). Calling a function from inside `$( )` is fine —
+# the case block is parsed once, here, at the top level.
+foreign_symlinks() {
+  local root="$1" allow="$2" l t
+  [ -e "$root" ] || return 0
+  find "$root" -type l 2>/dev/null | while IFS= read -r l; do
+    t="$(readlink "$l")" || continue
+    case "$t" in
+      /*) ;;
+      *)  continue ;;
+    esac
+    case "$t" in
+      "$allow"/*) continue ;;
+    esac
+    printf '%s -> %s\n' "$l" "$t"
+  done
+}
+
 # ── Directory audit ───────────────────────────────────────────────────────────
 # A whole-directory entry is the single highest-risk thing this tool does. We
 # learned this the hard way: a config dir held a live API key plus 250MB of
@@ -237,12 +260,7 @@ audit_dir() {
 
   # Absolute symlinks escaping $HOME are machine-specific and break on clone.
   local badlinks
-  badlinks="$(find "$src" -type l 2>/dev/null | while read -r l; do
-    t="$(readlink "$l")"
-    case "$t" in
-      /*) case "$t" in "$HOME"/*) ;; *) echo "$l -> $t" ;; esac ;;
-    esac
-  done | head -10)"
+  badlinks="$(foreign_symlinks "$src" "$HOME" | head -10)"
   if [ -n "$badlinks" ]; then
     warn "symlinks to absolute paths outside \$HOME (will not resolve elsewhere):"
     printf '%s\n' "$badlinks" | sed "s|^$src|      $rel|"
@@ -323,6 +341,27 @@ cmd_init() {
   if git ls-remote "$repo" >/dev/null 2>&1; then
     ok "Found $repo"
     git clone "$repo" "$DOTFILES_DIR"
+    # A clone can land with NOTHING checked out, in two different ways, and git
+    # only says so in a warning that scrolls past. Left unhandled, the next
+    # 'link' walks an empty repo and cheerfully reports success having done
+    # nothing — the exact silent failure we care most about avoiding.
+    if ! git_d rev-parse --verify -q HEAD >/dev/null 2>&1; then
+      local rbranch
+      rbranch="$(git_d for-each-ref --format='%(refname:short)' refs/remotes/origin \
+                 | grep -v '^origin/HEAD$' | head -1 || true)"
+      if [ -n "$rbranch" ]; then
+        # Remote HEAD points at a branch that does not exist (e.g. a bare `git
+        # init` remote defaults HEAD to master, but we push main). Content IS
+        # there — check out the branch that actually exists.
+        git_d checkout -q "${rbranch#origin/}"
+        ok "Checked out ${rbranch#origin/} (remote HEAD was unset or stale)"
+      else
+        # Genuinely empty remote: pin the unborn branch to main rather than
+        # inherit this machine's init.defaultBranch.
+        git_d symbolic-ref HEAD refs/heads/main
+        ok "Empty repo — pinned initial branch to main"
+      fi
+    fi
   else
     warn "No repo reachable at $repo"
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -473,6 +512,20 @@ cmd_link() {
   require_repo
   step "Linking dotfiles from $DOTFILES_DIR"
 
+  # An empty/absent manifest means there is nothing to walk, which would
+  # otherwise render as a cheerful "everything already linked". Say what is
+  # actually wrong — usually a clone that checked out nothing.
+  if [ ! -f "$MANIFEST" ] || [ -z "$(manifest_lines)" ]; then
+    warn "No manifest entries at $MANIFEST — nothing to link."
+    if [ -z "$(git_d ls-files 2>/dev/null | head -1)" ]; then
+      info "The repo has no tracked files checked out here. Check for an unborn"
+      info "branch or a failed checkout:  git -C $DOTFILES_DIR status"
+    else
+      info "Add something first:  dotfiles add ~/.zshrc"
+    fi
+    return 0
+  fi
+
   local linked="" skipped="" type rel label src dest
   while IFS='|' read -r type rel label; do
     [ -n "$rel" ] || continue
@@ -614,12 +667,7 @@ EOF
   # externally-managed tooling. No gitignore pattern catches these — they need
   # periodic manual pruning, so report them rather than pretend to fix them.
   local stray
-  stray="$(find "$DOTFILES_DIR" -type l 2>/dev/null | while read -r l; do
-    t="$(readlink "$l")"
-    case "$t" in
-      /*) case "$t" in "$DOTFILES_DIR"/*|"$HOME"/*) ;; *) echo "$l -> $t" ;; esac ;;
-    esac
-  done)"
+  stray="$(foreign_symlinks "$DOTFILES_DIR" "$HOME")"
   if [ -n "$stray" ]; then
     echo ""
     warn "Machine-specific absolute symlinks tracked in the repo (prune manually):"
