@@ -163,27 +163,54 @@ is_linked() {
   [ -L "$home_path" ] && [ "$(readlink "$home_path")" = "$repo_path" ]
 }
 
-# List symlinks under $1 whose target is an absolute path NOT under $2.
-# These are machine-specific and will dangle anywhere else.
+# List symlinks under $1 whose target is an absolute path under none of the
+# remaining arguments. Those are machine-specific and will dangle anywhere else.
 #
 # Defined as a function rather than inlined at the call sites on purpose: bash
 # 3.2 mis-parses a `case` block nested inside `$( )` ("syntax error near
 # unexpected token `newline'"). Calling a function from inside `$( )` is fine —
 # the case block is parsed once, here, at the top level.
 foreign_symlinks() {
-  local root="$1" allow="$2" l t
+  local root="$1"; shift
+  local l t a keep
   [ -e "$root" ] || return 0
   find "$root" -type l 2>/dev/null | while IFS= read -r l; do
     t="$(readlink "$l")" || continue
+    # Relative targets stay valid wherever the tree is checked out.
     case "$t" in
       /*) ;;
       *)  continue ;;
     esac
-    case "$t" in
-      "$allow"/*) continue ;;
-    esac
-    printf '%s -> %s\n' "$l" "$t"
+    keep=1
+    for a in "$@"; do
+      case "$t" in
+        "$a"/*) keep=0 ;;
+      esac
+    done
+    if [ "$keep" = "1" ]; then
+      printf '%s -> %s\n' "$l" "$t"
+    fi
   done
+}
+
+# The manifest is a line-based, '|'-delimited format. A path containing either
+# delimiter would be written out and then read back as a DIFFERENT path — the
+# file gets committed but becomes invisible to link/status forever. Refuse
+# rather than invent an escaping scheme for a case that should never arise.
+reject_unrepresentable() {
+  local rel="$1"
+  case "$rel" in
+    *"|"*)
+      bad "$rel contains '|', the manifest field separator — cannot track it"
+      info "Rename the file if you need it tracked."
+      return 1 ;;
+  esac
+  case "$rel" in
+    *"$(printf '\n')"*)
+      bad "$rel contains a newline — cannot track it"
+      return 1 ;;
+  esac
+  return 0
 }
 
 # ── Directory audit ───────────────────────────────────────────────────────────
@@ -260,7 +287,7 @@ audit_dir() {
 
   # Absolute symlinks escaping $HOME are machine-specific and break on clone.
   local badlinks
-  badlinks="$(foreign_symlinks "$src" "$HOME" | head -10)"
+  badlinks="$(foreign_symlinks "$src" "$HOME" "$DOTFILES_DIR" | head -10)"
   if [ -n "$badlinks" ]; then
     warn "symlinks to absolute paths outside \$HOME (will not resolve elsewhere):"
     printf '%s\n' "$badlinks" | sed "s|^$src|      $rel|"
@@ -346,9 +373,20 @@ cmd_init() {
     # 'link' walks an empty repo and cheerfully reports success having done
     # nothing — the exact silent failure we care most about avoiding.
     if ! git_d rev-parse --verify -q HEAD >/dev/null 2>&1; then
-      local rbranch
-      rbranch="$(git_d for-each-ref --format='%(refname:short)' refs/remotes/origin \
-                 | grep -v '^origin/HEAD$' | head -1 || true)"
+      # Prefer the conventional default branches by name. Falling straight to
+      # "first ref alphabetically" would check out a branch called 'apple' in
+      # preference to 'main'.
+      local rbranch="" cand
+      for cand in main master; do
+        if git_d rev-parse --verify -q "refs/remotes/origin/$cand" >/dev/null 2>&1; then
+          rbranch="origin/$cand"
+          break
+        fi
+      done
+      if [ -z "$rbranch" ]; then
+        rbranch="$(git_d for-each-ref --format='%(refname:short)' refs/remotes/origin \
+                   | grep -v '^origin/HEAD$' | head -1 || true)"
+      fi
       if [ -n "$rbranch" ]; then
         # Remote HEAD points at a branch that does not exist (e.g. a bare `git
         # init` remote defaults HEAD to master, but we push main). Content IS
@@ -436,6 +474,8 @@ cmd_add() {
     dest="$DOTFILES_DIR/$rel"
 
     step "Adding $rel"
+
+    reject_unrepresentable "$rel" || continue
 
     if [ -L "$src" ]; then
       if is_linked "$rel"; then
@@ -683,7 +723,10 @@ EOF
   # externally-managed tooling. No gitignore pattern catches these — they need
   # periodic manual pruning, so report them rather than pretend to fix them.
   local stray
-  stray="$(foreign_symlinks "$DOTFILES_DIR" "$HOME")"
+  # Allow $DOTFILES_DIR explicitly as well as $HOME: the repo is normally inside
+  # $HOME, but DOTFILES_DIR can point anywhere, and an absolute symlink pointing
+  # within the repo itself is portable, not machine-specific.
+  stray="$(foreign_symlinks "$DOTFILES_DIR" "$HOME" "$DOTFILES_DIR")"
   if [ -n "$stray" ]; then
     echo ""
     warn "Machine-specific absolute symlinks tracked in the repo (prune manually):"
