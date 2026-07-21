@@ -793,7 +793,15 @@ EOF
 
   local list
   list="$(printf '%s' "$removed" | tr '\n' ' ' | sed 's/ $//')"
-  git_d add -A
+  # Stage ONLY the manifest and the paths being removed. A blanket 'git add -A'
+  # here would sweep every unrelated edit in the repo — your in-flight config
+  # changes — into a commit labelled "remove X".
+  git_d add -- dotfiles.manifest
+  while IFS= read -r rel; do
+    [ -n "$rel" ] && git_d add -A -- "$rel"
+  done <<EOF
+$removed
+EOF
   git_d commit -qm "dotfiles: remove $list"
   ok "Committed removal: $list"
   info "Run 'dotfiles sync' to push."

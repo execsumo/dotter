@@ -145,6 +145,15 @@ lives in its own function.
 - **No secret scanning.** The `add` audit matches on *filenames*, not contents.
   A credential in a file named `config.toml` will not be caught.
 
+## Documentation
+
+| Doc | For |
+|---|---|
+| README.md (this file) | Installing and using it |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Why it is shaped this way — design decisions, invariants, what is deliberately absent |
+| [handoff.md](handoff.md) | Working on it — dev setup, house rules, bash 3.2 traps, open gaps |
+| [REVIEW.md](REVIEW.md) | Findings from an independent review pass |
+
 ## Consumers
 
 vibebox's container onboarding calls this tool for its dotfiles step:
