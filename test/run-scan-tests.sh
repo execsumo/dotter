@@ -170,6 +170,29 @@ test_expand_flags_secret_and_clean() {
   echo "$config_line" | grep -q '|-|' || { echo "config.toml not marked clean (-): $config_line"; return 1; }
 }
 
+# 5b. expand on a tracked dir (symlink in $HOME -> real dir in repo) lists all files with sizes
+test_expand_tracked_symlinked_dir_entry() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  mkdir -p "$HOME/.config/tool/subdir"
+  printf "hello" > "$HOME/.config/tool/file1.txt"
+  printf "world" > "$HOME/.config/tool/subdir/file2.txt"
+
+  # Add the dir entry to dotfiles repo — $HOME/.config/tool becomes a symlink!
+  "$BIN" add --yes "$HOME/.config/tool" >/dev/null
+
+  [ -L "$HOME/.config/tool" ] || { echo "$HOME/.config/tool is not a symlink after add"; return 1; }
+
+  local out
+  out="$("$SCAN_BIN" expand .config/tool)"
+
+  local nlines
+  nlines="$(printf '%s\n' "$out" | grep -c '^file|\.config/tool/')"
+  [ "$nlines" -eq 2 ] || { echo "expected 2 files from tracked dir expand, got $nlines"; return 1; }
+
+  printf '%s\n' "$out" | grep -q 'file|\.config/tool/file1\.txt|-|5' || { echo "file1 missing or bad size: $out"; return 1; }
+  printf '%s\n' "$out" | grep -q 'file|\.config/tool/subdir/file2\.txt|-|5' || { echo "file2 missing or bad size: $out"; return 1; }
+}
+
 # 6. audit output is byte-identical to dotfiles audit --porcelain for the same path
 test_audit_byte_identical() {
   "$BIN" init --repo "$REMOTE_DIR" >/dev/null
@@ -235,6 +258,7 @@ run_test "Candidates format well-formed (4 fields, valid kind)" test_candidates_
 run_test "Candidates does not propose .ssh as dir" test_candidates_no_ssh_dir
 run_test "Expand lists regular files recursively" test_expand_lists_regular_files
 run_test "Expand flags secret (auth.json) and clean (-)" test_expand_flags_secret_and_clean
+run_test "Expand on tracked symlinked dir entry" test_expand_tracked_symlinked_dir_entry
 run_test "Audit output byte-identical to dotfiles audit --porcelain" test_audit_byte_identical
 run_test "Audit catches all unsafe cases (auth, 60MB, socket, git)" test_audit_catches_all_unsafe_cases
 run_test "Exit codes (0 on findings, non-zero on scan failure)" test_exit_codes

@@ -217,8 +217,12 @@ cmd_expand() {
     exit 1
   fi
 
-  local src="$HOME/$rel"
-  [ -e "$src" ] || src="$DOTFILES_DIR/$rel"
+  local src
+  if [ -e "$DOTFILES_DIR/$rel" ]; then
+    src="$DOTFILES_DIR/$rel"
+  else
+    src="$HOME/$rel"
+  fi
 
   if [ ! -d "$src" ]; then
     echo "error: $rel is not a directory" >&2
@@ -227,8 +231,8 @@ cmd_expand() {
 
   local f f_rel size_bytes flags
   find "$src" -type f 2>/dev/null | sort | while IFS= read -r f; do
-    f_rel="${f#"$HOME"/}"
-    [ "$f_rel" != "$f" ] || f_rel="${f#"$DOTFILES_DIR"/}"
+    f_rel="${f#"$DOTFILES_DIR"/}"
+    [ "$f_rel" != "$f" ] || f_rel="${f#"$HOME"/}"
     size_bytes="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
     flags="$(file_flags "$f")"
     printf 'file|%s|%s|%s\n' "$f_rel" "$flags" "${size_bytes:-0}"
