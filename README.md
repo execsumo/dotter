@@ -13,37 +13,134 @@ you won't use.
 
 ## Install
 
-Single self-contained script — copy it onto your `PATH`:
+One self-contained script — copy it onto your `PATH`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles \
   -o ~/.local/bin/dotfiles && chmod +x ~/.local/bin/dotfiles
 ```
 
-Requires bash, git, and coreutils. Works on macOS and Linux. `gh` is optional —
-used only to *create* a dotfiles repo that doesn't exist yet.
+Make sure `~/.local/bin` is on your `PATH` (most shells already put it there). Then:
+
+```bash
+dotfiles version    # confirm it's installed
+```
+
+Requires bash, git, and coreutils — all of which you already have on macOS and
+Linux. `gh` is optional, used only to *create* a dotfiles repo that doesn't exist
+yet.
 
 ## Quick start
 
-On your first machine:
+Two situations. Pick the one you're in.
+
+### 1. First time — set up your dotfiles
+
+Point dotter at a git repo (empty is fine; it'll create one with `gh` if it
+doesn't exist yet), then add the files you care about:
 
 ```bash
 dotfiles init --repo https://github.com/<you>/dotfiles
-dotfiles add ~/.zshrc ~/.gitconfig ~/.tmux.conf
+dotfiles add ~/.zshrc ~/.gitconfig
 dotfiles sync
 ```
 
-On every other machine — laptop, VPS, container:
+Here's what you actually see. `add` moves each file into the repo and drops a
+symlink in its place — so your shell keeps finding `~/.zshrc`, it's just a link
+now:
+
+```
+$ dotfiles add ~/.zshrc ~/.gitconfig
+==> Adding .zshrc
+  ✓ moved into repo and symlinked back
+==> Adding .gitconfig
+  ✓ moved into repo and symlinked back
+==> Committing
+  ✓ Committed: .zshrc .gitconfig
+    Run 'dotfiles sync' to push.
+
+$ dotfiles sync
+==> Syncing ~/.dotfiles
+    Pushing
+  ✓ Pushed
+```
+
+That's it — your dotfiles are now version-controlled and backed up.
+
+### 2. New machine — get your dotfiles onto it
+
+On any other machine — a laptop, a VPS, a fresh container — clone the repo and
+lay down the symlinks:
 
 ```bash
 dotfiles init --repo https://github.com/<you>/dotfiles
 dotfiles link
 ```
 
-There is no "source of truth" machine. Every machine is a peer: `add` from
-wherever you happen to be, `sync` to share it, `link` to apply it.
+```
+$ dotfiles link
+==> Linking dotfiles from ~/.dotfiles
+  ✓ Linked: .zshrc .gitconfig
+```
 
-## Commands
+Your `~/.zshrc` and everything else you tracked are now in place.
+
+There is no "source of truth" machine — every machine is a peer. `add` from
+wherever you happen to be, `sync` to share it, `link` to apply it elsewhere.
+
+## Everyday tasks
+
+Once you're set up, day-to-day use is a handful of one-liners.
+
+| I want to… | Run |
+|---|---|
+| **Track a new file** | `dotfiles add ~/.vimrc` — then `dotfiles sync` to share it |
+| **Share my latest changes** | `dotfiles sync` — pulls first, then pushes |
+| **Pull changes made on another machine** | `dotfiles sync`, then `dotfiles link` if you added new files there |
+| **See what's tracked and its state** | `dotfiles status` |
+| **Stop tracking a file** (keep the real file) | `dotfiles rm ~/.vimrc` — restores it and drops the symlink |
+| **Set up a whole new machine** | `dotfiles init --repo <url>` then `dotfiles link` |
+
+`dotfiles status` is the one to reach for when something looks off — it shows the
+link state of every tracked file plus any repo-health warnings:
+
+```
+$ dotfiles status
+==> Dotfiles status (~/.dotfiles)
+  ✓ .zshrc
+  ✓ .gitconfig
+    2 linked, 0 linkable, 0 addable from here, 0 absent, 0 conflicting
+  ✓ Working tree clean
+```
+
+You edit your dotfiles the normal way — they're just files. When you're happy,
+`dotfiles sync -m "tweak prompt"` commits the working tree and pushes in one step.
+
+## The easy way: an optional TUI
+
+Prefer clicking around to remembering commands? There's an optional terminal UI
+that does everything above interactively:
+
+- **Browse** what's tracked and toggle entries on and off
+- **Discover** config files sitting in your `$HOME` that you haven't added yet
+- **Narrow** a risky whole-directory entry down to just the individual files
+- **Sync / status** from a live dashboard
+
+It's a thin wrapper — every action it takes is a real `dotfiles` command, so it
+changes nothing about how the tool works or its guarantees. It's a **separate,
+opt-in** install so the core `dotfiles` command stays zero-dependency (a bare VPS
+never needs it). The TUI needs [`fzf`](https://github.com/junegunn/fzf); the
+companion scanner it uses needs nothing beyond git and coreutils.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-scan \
+  -o ~/.local/bin/dotfiles-scan && chmod +x ~/.local/bin/dotfiles-scan
+curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-tui \
+  -o ~/.local/bin/dotfiles-tui && chmod +x ~/.local/bin/dotfiles-tui
+dotfiles-tui        # browse, discover, narrow, status
+```
+
+## Command reference
 
 | Command | What it does |
 |---|---|
@@ -80,10 +177,11 @@ type|relpath|label
 `#` comments and blank lines are ignored. `dotfiles add` appends to it for you,
 but it is a plain text file — edit it by hand whenever that's easier.
 
-### Why an allow-list, and not "just sync the whole home directory"
+### Prefer tracking files, be careful with whole directories
 
-This is the design's load-bearing safety property, not a formatting convenience.
-Every entry is something you named on purpose.
+The manifest is an allow-list on purpose: every entry is something you named
+deliberately. This is the design's load-bearing safety property, not a formatting
+convenience.
 
 **Prefer `file|` entries. Treat `dir|` as a risk.** A whole-directory entry
 tracks not just what's in it today but whatever the owning tool writes there
@@ -96,7 +194,8 @@ tomorrow. Real things this caught, the hard way:
   state alongside its one actual config file.
 
 The fix in both cases was the same: narrow the `dir|` entry to individual
-`file|` entries naming only the known-safe config files.
+`file|` entries naming only the known-safe config files. (The TUI's **narrow**
+screen does exactly this for you.)
 
 `dotfiles add <dir>` therefore audits before it accepts — it reports size, file
 count, credential-shaped filenames, oversized files, sockets, logs, databases,
@@ -105,30 +204,15 @@ not a guarantee.** It cannot know what the tool will write next week — so
 `dotfiles audit` re-runs it on demand across every tracked directory, to catch a
 config dir that has since grown an `auth.json`.
 
-## Optional: the TUI
+## What to watch out for
 
-There is an optional terminal UI for browsing and managing what's tracked —
-toggling entries, discovering config files in `$HOME` you haven't added yet,
-narrowing a risky `dir` entry down to individual files, and a sync/status
-dashboard. It is a thin wrapper: every action it takes is a real `dotfiles`
-command, so it changes nothing about how the tool works or its guarantees.
+These are all deliberate, and each one is the scar tissue of a real failure —
+worth a skim so none of them surprise you.
 
-It is a **separate, opt-in** install — the core `dotfiles` command stays
-zero-dependency, so a bare VPS or container never needs it. The TUI needs
-[`fzf`](https://github.com/junegunn/fzf); the companion scanner it uses needs
-nothing beyond git and coreutils.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-scan \
-  -o ~/.local/bin/dotfiles-scan && chmod +x ~/.local/bin/dotfiles-scan
-curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-tui \
-  -o ~/.local/bin/dotfiles-tui && chmod +x ~/.local/bin/dotfiles-tui
-dotfiles-tui        # then browse, discover, narrow, status
-```
-
-## Behaviours worth knowing
-
-These are all deliberate, and each one is the scar tissue of a real failure.
+**Real files are backed up, not overwritten.** `link` moves a pre-existing real
+file to `<name>.bak` before symlinking over it. Precisely: an older `<name>.bak`
+is replaced by the newer backup, and a symlink in the way is removed rather than
+backed up (it holds no content of its own).
 
 **Nested git repos are refused.** If a directory contains its own `.git`, `add`
 refuses. Moving a live git repo inside another makes git record it as a
@@ -141,11 +225,6 @@ one, it travels with the directory and keeps applying once nested in the
 dotfiles repo. The tool doesn't try to reinvent exclusion rules its owner
 already maintains.
 
-**Real files are backed up, not overwritten.** `link` moves a pre-existing real
-file to `<name>.bak` before symlinking over it. Precisely: an older `<name>.bak`
-is replaced by the newer backup, and a symlink in the way is removed rather than
-backed up (it holds no content of its own).
-
 **HTTPS remotes only.** `gh auth login` installs a git credential helper for
 HTTPS, so this works with no SSH key on the account. SSH remotes fail with
 `Permission denied (publickey)` on machines that never registered one — which is
@@ -153,15 +232,13 @@ every fresh container. The tool warns if `origin` is an SSH URL.
 
 **`sync` survives half-initialised repos.** A repo can legitimately have zero
 commits, or commits but no upstream tracking branch, after an interrupted run.
-A bare `git pull --ff-only` hard-fails in both states and, under `set -e`, takes
-the whole script down. `sync` checks for both and warns instead.
+`sync` checks for both and warns instead of hard-failing.
 
 **The branch is always `main`.** Never inherited from `init.defaultBranch`.
 
-**bash 3.2 compatible.** macOS still ships bash 3.2 (2007), so: no `${VAR,,}`,
-no `declare -A`, no `mapfile`/`readarray`. There is a subtler one too — bash 3.2
-mis-parses a `case` block nested inside `$( )`, which is why the symlink scan
-lives in its own function.
+**bash 3.2 compatible.** macOS still ships bash 3.2 (2007), so the tool avoids
+anything newer. This is a maintenance constraint, not something you need to think
+about as a user.
 
 ## Known limitations
 
