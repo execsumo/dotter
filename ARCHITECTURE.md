@@ -187,27 +187,19 @@ The properties everything else is built to preserve:
 
 ---
 
-## The TUI is a wrapper, not part of the core
+## `audit` re-checks tracked directories
 
-An optional terminal UI (`bin/dotfiles-tui`, with `bin/dotfiles-scan` feeding it
-data) ships alongside the core — but deliberately *outside* it. The core
-`bin/dotfiles` gains nothing but one additive command (`audit`); it stays
-zero-dependency and single-file.
+`add` audits a directory once, at the moment you track it — but a `dir` entry
+keeps accepting whatever the owning tool writes into it later. `dotfiles audit`
+re-runs that same detection across tracked paths on demand (with no argument, it
+sweeps every `dir` entry), so a config directory that has since grown an
+`auth.json` or a 200MB blob gets caught before the next push.
 
-This is the load-bearing decision, and it follows directly from the product
-position: *no third-party dependencies; a tool you can read in one sitting.* A
-TUI needs `fzf` and a few hundred lines of interactive choreography — neither
-belongs on the path a bare container installs. So the UI is a separate opt-in
-fetch that **shells out to the real `dotfiles` command for every mutation.** It
-is a view and a launcher; it never re-implements add/rm/link/sync, which means
-it cannot drift from their behaviour or weaken their guarantees.
-
-The one thing the core *did* need was a machine-readable view of its own audit,
-so the TUI (and any script) could consume it without duplicating the detection
-patterns. Hence `dotfiles audit --porcelain` — added to the core precisely
-because a second copy of safety-critical detection logic, living in the wrapper,
-would be the kind of silent drift this project is built to avoid. One
-authoritative audit primitive; the scanner's `audit`/`expand` wrap it.
+It is deliberately one additive command on the core — a single authoritative
+audit primitive, not a second copy of the detection patterns living somewhere
+else, which would be exactly the kind of silent drift this project exists to
+avoid. `--porcelain` emits `relpath|flag|severity|detail` so a script can consume
+the same findings without re-implementing them.
 
 ## Platform constraints
 

@@ -116,30 +116,6 @@ $ dotfiles status
 You edit your dotfiles the normal way — they're just files. When you're happy,
 `dotfiles sync -m "tweak prompt"` commits the working tree and pushes in one step.
 
-## The easy way: an optional TUI
-
-Prefer clicking around to remembering commands? There's an optional terminal UI
-that does everything above interactively:
-
-- **Browse** what's tracked and toggle entries on and off
-- **Discover** config files sitting in your `$HOME` that you haven't added yet
-- **Narrow** a risky whole-directory entry down to just the individual files
-- **Sync / status** from a live dashboard
-
-It's a thin wrapper — every action it takes is a real `dotfiles` command, so it
-changes nothing about how the tool works or its guarantees. It's a **separate,
-opt-in** install so the core `dotfiles` command stays zero-dependency (a bare VPS
-never needs it). The TUI needs [`fzf`](https://github.com/junegunn/fzf); the
-companion scanner it uses needs nothing beyond git and coreutils.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-scan \
-  -o ~/.local/bin/dotfiles-scan && chmod +x ~/.local/bin/dotfiles-scan
-curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-tui \
-  -o ~/.local/bin/dotfiles-tui && chmod +x ~/.local/bin/dotfiles-tui
-dotfiles-tui        # browse, discover, narrow, status
-```
-
 ## Command reference
 
 | Command | What it does |
@@ -194,8 +170,7 @@ tomorrow. Real things this caught, the hard way:
   state alongside its one actual config file.
 
 The fix in both cases was the same: narrow the `dir|` entry to individual
-`file|` entries naming only the known-safe config files. (The TUI's **narrow**
-screen does exactly this for you.)
+`file|` entries naming only the known-safe config files.
 
 `dotfiles add <dir>` therefore audits before it accepts — it reports size, file
 count, credential-shaped filenames, oversized files, sockets, logs, databases,
