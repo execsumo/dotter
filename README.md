@@ -52,6 +52,7 @@ wherever you happen to be, `sync` to share it, `link` to apply it.
 | `dotfiles link` (alias `apply`) | Symlink every manifest entry present in the repo but not yet linked here. Backs up conflicts as `*.bak`. |
 | `dotfiles sync [-m MESSAGE]` | Pull remote changes, then push local commits. With `-m`, commits the working tree first. |
 | `dotfiles status` | Per-entry link state, plus repo health warnings. |
+| `dotfiles audit [--porcelain] [<path>...]` | Re-run the `add`-time safety audit against tracked paths. With no path, checks every `dir` entry. |
 | `dotfiles rm [--yes] <path>...` (alias `remove`) | Untrack: restore the real file to `$HOME`, drop the manifest entry. |
 | `dotfiles help` / `version` | Also available as `-h`, `--help`, `--version`. |
 
@@ -100,7 +101,30 @@ The fix in both cases was the same: narrow the `dir|` entry to individual
 `dotfiles add <dir>` therefore audits before it accepts — it reports size, file
 count, credential-shaped filenames, oversized files, sockets, logs, databases,
 and non-portable symlinks, then makes you confirm. **That audit is a snapshot,
-not a guarantee.** It cannot know what the tool will write next week.
+not a guarantee.** It cannot know what the tool will write next week — so
+`dotfiles audit` re-runs it on demand across every tracked directory, to catch a
+config dir that has since grown an `auth.json`.
+
+## Optional: the TUI
+
+There is an optional terminal UI for browsing and managing what's tracked —
+toggling entries, discovering config files in `$HOME` you haven't added yet,
+narrowing a risky `dir` entry down to individual files, and a sync/status
+dashboard. It is a thin wrapper: every action it takes is a real `dotfiles`
+command, so it changes nothing about how the tool works or its guarantees.
+
+It is a **separate, opt-in** install — the core `dotfiles` command stays
+zero-dependency, so a bare VPS or container never needs it. The TUI needs
+[`fzf`](https://github.com/junegunn/fzf); the companion scanner it uses needs
+nothing beyond git and coreutils.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-scan \
+  -o ~/.local/bin/dotfiles-scan && chmod +x ~/.local/bin/dotfiles-scan
+curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles-tui \
+  -o ~/.local/bin/dotfiles-tui && chmod +x ~/.local/bin/dotfiles-tui
+dotfiles-tui        # then browse, discover, narrow, status
+```
 
 ## Behaviours worth knowing
 

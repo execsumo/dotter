@@ -143,6 +143,11 @@ status           per entry: linked / linkable / addable here / absent / conflict
                  → scan for machine-specific absolute symlinks
                  → report dirty tree
 
+audit [path...]  no path? every dir| entry in the manifest
+                 → for each: re-run the add-time detection (secret/large/socket/
+                   log/db/foreign-symlink/nested-git)
+                 → --porcelain: relpath|flag|severity|detail, else prose
+
 rm <path>        same file via symlinked ancestor? confirm, then delete
                  → restore real content to $HOME
                  → drop manifest entry
@@ -181,6 +186,28 @@ The properties everything else is built to preserve:
    in `init`, only to create a repo that does not exist yet.
 
 ---
+
+## The TUI is a wrapper, not part of the core
+
+An optional terminal UI (`bin/dotfiles-tui`, with `bin/dotfiles-scan` feeding it
+data) ships alongside the core — but deliberately *outside* it. The core
+`bin/dotfiles` gains nothing but one additive command (`audit`); it stays
+zero-dependency and single-file.
+
+This is the load-bearing decision, and it follows directly from the product
+position: *no third-party dependencies; a tool you can read in one sitting.* A
+TUI needs `fzf` and a few hundred lines of interactive choreography — neither
+belongs on the path a bare container installs. So the UI is a separate opt-in
+fetch that **shells out to the real `dotfiles` command for every mutation.** It
+is a view and a launcher; it never re-implements add/rm/link/sync, which means
+it cannot drift from their behaviour or weaken their guarantees.
+
+The one thing the core *did* need was a machine-readable view of its own audit,
+so the TUI (and any script) could consume it without duplicating the detection
+patterns. Hence `dotfiles audit --porcelain` — added to the core precisely
+because a second copy of safety-critical detection logic, living in the wrapper,
+would be the kind of silent drift this project is built to avoid. One
+authoritative audit primitive; the scanner's `audit`/`expand` wrap it.
 
 ## Platform constraints
 
