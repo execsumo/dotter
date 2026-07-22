@@ -52,7 +52,7 @@ test_no_tty_handling() {
 test_dry_run_narrow() {
   local out
   out="$(DOTFILES_TUI_DRY_RUN=1 "$TUI" narrow mydir file1.txt file2.txt)"
-  echo "$out" | grep -q "^WOULD-RUN: dotfiles rm mydir" || { echo "Missing WOULD-RUN: dotfiles rm"; return 1; }
+  echo "$out" | grep -q "^WOULD-RUN: dotfiles rm ~/mydir" || { echo "Missing WOULD-RUN: dotfiles rm ~/mydir"; return 1; }
   echo "$out" | grep -q "^WOULD-RUN: dotfiles add ~/mydir/file1.txt" || { echo "Missing WOULD-RUN: dotfiles add file1"; return 1; }
   echo "$out" | grep -q "^WOULD-RUN: dotfiles add ~/mydir/file2.txt" || { echo "Missing WOULD-RUN: dotfiles add file2"; return 1; }
   if echo "$out" | grep -q "\-\-yes"; then
@@ -64,7 +64,7 @@ test_dry_run_narrow() {
 test_dry_run_browse_rm() {
   local out
   out="$(DOTFILES_TUI_DRY_RUN=1 "$TUI" browse rm .zshrc)"
-  echo "$out" | grep -q "^WOULD-RUN: dotfiles rm .zshrc" || return 1
+  echo "$out" | grep -q "^WOULD-RUN: dotfiles rm ~/.zshrc" || return 1
 }
 
 test_dry_run_discover() {

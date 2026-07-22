@@ -189,7 +189,10 @@ screen_browse() {
       rm|remove)
         [ -n "$path" ] || { echo "error: browse rm requires path" >&2; exit 1; }
         if [ "${DOTFILES_TUI_DRY_RUN:-0}" = "1" ] || confirm "Remove/untrack $path?"; then
-          run_cli dotfiles rm "$path"
+          case "$path" in
+            "~/"*|/*) run_cli dotfiles rm "$path" ;;
+            *)        run_cli dotfiles rm "~/$path" ;;
+          esac
         fi
         return 0
         ;;
@@ -238,7 +241,10 @@ screen_browse() {
   case "$key" in
     ctrl-d)
       if confirm "Untrack and restore real file for $sel_rel?"; then
-        run_cli dotfiles rm "$sel_rel"
+        case "$sel_rel" in
+          "~/"*|/*) run_cli dotfiles rm "$sel_rel" ;;
+          *)        run_cli dotfiles rm "~/$sel_rel" ;;
+        esac
       fi
       ;;
     ctrl-n|n)
@@ -285,7 +291,10 @@ screen_discover() {
   if [ $# -gt 0 ]; then
     local p
     for p in "$@"; do
-      run_cli dotfiles add "$p"
+      case "$p" in
+        "~/"*|/*) run_cli dotfiles add "$p" ;;
+        *)        run_cli dotfiles add "~/$p" ;;
+      esac
     done
     return 0
   fi
@@ -342,7 +351,10 @@ EOF
 
   if confirm "Add candidate(s):$sel_paths ?"; then
     for sel_path in $sel_paths; do
-      run_cli dotfiles add "$sel_path"
+      case "$sel_path" in
+        "~/"*|/*) run_cli dotfiles add "$sel_path" ;;
+        *)        run_cli dotfiles add "~/$sel_path" ;;
+      esac
     done
   fi
 }
@@ -352,7 +364,10 @@ screen_narrow() {
   shift || true
 
   if [ -n "$target_dir" ] && [ $# -gt 0 ]; then
-    run_cli dotfiles rm "$target_dir"
+    case "$target_dir" in
+      "~/"*|/*) run_cli dotfiles rm "$target_dir" ;;
+      *)        run_cli dotfiles rm "~/$target_dir" ;;
+    esac
     local f target_path
     for f in "$@"; do
       case "$f" in
@@ -437,9 +452,17 @@ EOF
   done
 
   if confirm "Execute narrowing now?"; then
-    run_cli dotfiles rm "$target_dir"
+    case "$target_dir" in
+      "~/"*|/*) run_cli dotfiles rm "$target_dir" ;;
+      *)        run_cli dotfiles rm "~/$target_dir" ;;
+    esac
     for sel_f in $sel_files; do
-      run_cli dotfiles add "~/$sel_f"
+      case "$sel_f" in
+        "~/"*|/*) target_path="$sel_f" ;;
+        "$target_dir"/*) target_path="~/$sel_f" ;;
+        *) target_path="~/$target_dir/$sel_f" ;;
+      esac
+      run_cli dotfiles add "$target_path"
     done
   fi
 }
