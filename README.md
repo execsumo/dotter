@@ -13,17 +13,30 @@ you won't use.
 
 ## Install
 
-One self-contained script — copy it onto your `PATH`:
+### Homebrew (macOS / Linux)
+
+```bash
+brew install execsumo/tap/dotter
+```
+
+Installs the `dotfiles` command. Update later with `brew upgrade dotter`.
+
+### Or fetch the single script
+
+It's one self-contained file — no build, no package needed. Drop it on your `PATH`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles \
   -o ~/.local/bin/dotfiles && chmod +x ~/.local/bin/dotfiles
 ```
 
-Make sure `~/.local/bin` is on your `PATH` (most shells already put it there). Then:
+Make sure `~/.local/bin` is on your `PATH` (most shells already put it there).
+This is the path a bare VPS or container uses — no Homebrew required.
+
+Either way, confirm it's installed:
 
 ```bash
-dotfiles version    # confirm it's installed
+dotfiles version
 ```
 
 Requires bash, git, and coreutils — all of which you already have on macOS and
