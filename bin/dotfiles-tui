@@ -207,7 +207,9 @@ screen_browse() {
   check_tty
 
   local tmp_list="/tmp/dotfiles_tui_browse_$$"
-  trap 'rm -f "$tmp_list"' EXIT
+  # Guard with ${:-}: this is a local, but the EXIT trap fires at process exit,
+  # after the function has returned and the local is gone — unbound under set -u.
+  trap 'rm -f "${tmp_list:-}"' EXIT
 
   build_browse_list "$tmp_list"
 
@@ -222,6 +224,7 @@ screen_browse() {
     --ansi \
     --header="ENTER: link all | CTRL-D: untrack entry | N: narrow dir | R: reload | Q: quit" \
     --prompt="Browse> " \
+    --bind=q:abort \
     --preview="\"$DOTFILES_BIN\" audit --porcelain {2} 2>/dev/null || echo 'No audit data'" \
     --preview-window=right:50%:wrap \
     --expect=ctrl-d,ctrl-n,n,ctrl-r,r,enter \
@@ -303,7 +306,7 @@ screen_discover() {
   check_tty
 
   local tmp_list="/tmp/dotfiles_tui_disc_$$"
-  trap 'rm -f "$tmp_list"' EXIT
+  trap 'rm -f "${tmp_list:-}"' EXIT
 
   if [ -n "$SCAN_BIN" ]; then
     run_cli dotfiles-scan candidates > "$tmp_list" 2>/dev/null || fallback_candidates > "$tmp_list"
@@ -317,7 +320,7 @@ screen_discover() {
   fi
 
   local formatted_file="/tmp/dotfiles_tui_disc_fmt_$$"
-  trap 'rm -f "$tmp_list" "$formatted_file"' EXIT
+  trap 'rm -f "${tmp_list:-}" "${formatted_file:-}"' EXIT
 
   local kind rel flags label
   : > "$formatted_file"
@@ -331,7 +334,8 @@ screen_discover() {
     --ansi --multi \
     --header="TAB: select multiple | ENTER: add candidate(s) | Q: quit" \
     --prompt="Discover> " \
-    --preview="\"$DOTFILES_BIN\" audit {2} 2>/dev/null || echo 'No audit info'" \
+    --bind=q:abort \
+    --preview="\"$DOTFILES_BIN\" audit \"~/{2}\" 2>/dev/null || echo 'No audit info'" \
     --preview-window=right:50%:wrap \
     < "$formatted_file" || true)"
 
@@ -399,7 +403,7 @@ screen_narrow() {
   fi
 
   local tmp_expand="/tmp/dotfiles_tui_exp_$$"
-  trap 'rm -f "$tmp_expand"' EXIT
+  trap 'rm -f "${tmp_expand:-}"' EXIT
 
   if [ -n "$SCAN_BIN" ]; then
     run_cli dotfiles-scan expand "$target_dir" > "$tmp_expand" 2>/dev/null || fallback_expand "$target_dir" > "$tmp_expand"
@@ -413,7 +417,7 @@ screen_narrow() {
   fi
 
   local formatted_file="/tmp/dotfiles_tui_exp_fmt_$$"
-  trap 'rm -f "$tmp_expand" "$formatted_file"' EXIT
+  trap 'rm -f "${tmp_expand:-}" "${formatted_file:-}"' EXIT
 
   local kind rel flags bytes
   : > "$formatted_file"
@@ -427,6 +431,7 @@ screen_narrow() {
     --ansi --multi \
     --header="TAB: multi-select config files | ENTER: replace dir entry with selected files | Q: quit" \
     --prompt="Narrow ($target_dir)> " \
+    --bind=q:abort \
     --preview="\"$DOTFILES_BIN\" audit {1} 2>/dev/null || head -n 30 ~/{1}" \
     --preview-window=right:50%:wrap \
     < "$formatted_file" || true)"
@@ -501,6 +506,7 @@ screen_status() {
     --ansi \
     --header="S: sync | L: link | A: audit | R: refresh | Q: quit" \
     --prompt="Dashboard> " \
+    --bind=q:abort \
     --preview="\"$DOTFILES_BIN\" status" \
     --preview-window=right:80%:wrap \
     --expect=s,l,a,r,ctrl-r,enter \
