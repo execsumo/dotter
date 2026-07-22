@@ -13,11 +13,11 @@ For *usage* see [README.md](README.md); for *why it is shaped this way* see
 
 | | |
 |---|---|
-| Version | 1.0.0 (`dotfiles version`) |
+| Version | 1.0.0 (`dotfiles version`), tagged `v1.0.0` |
 | Implementation | `bin/dotfiles`, single file, ~1090 lines of bash |
 | Tests | `test/run-tests.sh`, 27 tests, all passing on bash 3.2 |
 | Consumers | vibebox (`scripts/onboard`) |
-| Published | `https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles` |
+| Install channels | Homebrew (`brew install execsumo/tap/dotter`); raw URL (`.../main/bin/dotfiles`) |
 
 **`dotfiles audit`** — re-run the add-time audit against tracked paths (with no
 argument, every `dir` entry) — is in `main`. An optional fzf TUI plus a
@@ -35,6 +35,7 @@ discover list that went stale); the `audit` command they introduced was kept.
 | `test/run-tests.sh` | Sandboxed core suite. No network, no `gh`, no credentials. |
 | `README.md` | User-facing: install, commands, safety behaviours. |
 | `ARCHITECTURE.md` | Design rationale, invariants, platform constraints. |
+| `LICENSE` | MIT. Referenced by the Homebrew formula. |
 | `REVIEW.md` | Code findings from an independent review pass. Historical record. |
 | `DOC-REVIEW.md` | Doc-accuracy findings from an independent review pass. Historical record. |
 
@@ -170,6 +171,36 @@ CLI as plain subcommands rather than a separate fzf wrapper.
 
 ---
 
+## Distribution / cutting a release
+
+Three channels, all serving the same single `bin/dotfiles` file:
+
+1. **Raw URL** — `https://raw.githubusercontent.com/execsumo/dotter/main/bin/dotfiles`.
+   Always tracks `main`. This is vibebox's fetch path; it needs no release.
+2. **Homebrew** — `brew install execsumo/tap/dotter`. Formula lives at
+   `Formula/dotter.rb` in the **`execsumo/homebrew-tap`** repo (tapped as
+   `execsumo/tap`). Unlike that tap's compiled-binary formulas (e.g. `dossier`,
+   which ships per-platform release assets), dotter installs from the **source
+   tarball** via `bin.install "bin/dotfiles"` — the idiomatic shape for an
+   interpreted single-file tool, so there are no per-platform builds.
+3. **GitHub release** — the tag the Homebrew tarball is cut from.
+
+### To ship a new version
+
+1. Bump the `VERSION` in `bin/dotfiles` so `dotfiles version` matches, commit.
+2. Tag and release: `git tag -a vX.Y.Z -m "dotter vX.Y.Z" && git push origin vX.Y.Z`,
+   then `gh release create vX.Y.Z`.
+3. Update the formula in `execsumo/homebrew-tap`: point `url` at the new
+   `.../archive/refs/tags/vX.Y.Z.tar.gz` and refresh `sha256`
+   (`curl -sL <url> | shasum -a 256`).
+4. Verify: `brew update && brew upgrade dotter` (or a clean
+   `brew install execsumo/tap/dotter`), then `brew test execsumo/tap/dotter`.
+
+The v1.0.0 formula was **bootstrapped by hand** (per the tap's `AGENTS.md`
+step 5). There is **no CI auto-update yet** — see Gaps.
+
+---
+
 ## Consumers
 
 vibebox's `scripts/onboard` calls:
@@ -201,5 +232,11 @@ Nothing blocking. In rough priority order:
   helper presence, and `dir` entries that have grown since they were added.
 - **The `add` audit is filename-based.** Content scanning for
   high-entropy strings would catch a credential in a plausibly-named file.
+- **The Homebrew formula updates by hand.** Every new tag needs a manual
+  `url`/`sha256` bump in `execsumo/homebrew-tap`. The tap's other formulas
+  automate this with an `update-tap` CI job driven by a fine-grained `GH_PAT`
+  (scoped to the tap, Contents: R/W); dotter has no release workflow yet. Adding
+  one would make `git push --tags` regenerate the formula. See the tap's
+  `AGENTS.md`.
 - ~~No re-audit of existing `dir` entries.~~ **Closed** by `dotfiles audit`,
   which re-runs the add-time audit across every tracked directory on demand.

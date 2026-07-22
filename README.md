@@ -260,3 +260,7 @@ dotfiles link
 ```
 
 That's the whole integration — the same two commands you'd run anywhere else.
+
+## License
+
+[MIT](LICENSE).
