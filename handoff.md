@@ -171,6 +171,73 @@ CLI as plain subcommands rather than a separate fzf wrapper.
 
 ---
 
+## Known defect: harness-clobbered `file` entries
+
+**A `file` entry pointing at a config the owning tool rewrites itself will stop
+being a symlink, and the recovery path the tool suggests reverts the user's
+config.** Open, not fixed.
+
+Tools that write their config programmatically write it *atomically*: temp file
+plus `rename()` onto the target. `rename()` replaces the **symlink itself**, so
+`~/.claude/settings.json` goes from a link into the repo back to a regular file.
+Everything written after that is invisible to dotter and the repo copy silently
+goes stale. A `dir` entry is not exposed the same way — a rename *inside* a
+symlinked directory resolves through the link into the repo — and neither is a
+file nothing rewrites programmatically.
+
+Observed on the author's machine, 2026-07-27. Two of eight linked entries were
+in this state:
+
+```
+✗ .claude/settings.json — local file exists but is not a link to the repo
+✗ .gemini/antigravity-cli/settings.json — local file exists but is not a link to the repo
+```
+
+Both added and symlinked on 2026-07-20. `~/.claude/settings.json` had by then
+diverged by `statusLine`, `effortLevel`, `advisorModel`, `tui`, `theme`,
+`cleanupPeriodDays` — every one of them a key written by a plugin install or a
+`/config` toggle, none of them hand-edited. Every entry that survived was either
+a directory (`.hermes`, `.config/codeburn`, `.claude/skills`) or a file nothing
+rewrites (`.zshrc`, `.gitconfig`, `CLAUDE.md`, `herdr/config.toml`). The split
+is exactly what the mechanism predicts.
+
+The `.gemini` case is the clean evidence: nothing else manages that path. The
+`.claude` case is confounded — `~/.claude` is itself a git repo with a remote
+(`execsumo/claude-config`) that also tracks `settings.json`, and a `git checkout`
+there breaks the link just as thoroughly. Two managers on one file is its own
+hazard, independent of this one.
+
+### Detection is fine; the remedy is backwards
+
+`status` already catches it (`bad "$rel — local file exists but is not a link to
+the repo"`). The problem is what the tool tells you to do next:
+
+- `add <path>` → *"already tracked and present in the repo — run 'dotfiles link'
+  instead"*
+- `link` → sees a non-symlink at `$dest`, moves it to `.bak`, links the **stale
+  repo copy** over it
+
+For this failure mode the newer side is *always* the local one, and `link`
+always picks the repo. It warns and leaves a `.bak`, so it is not silent — but
+it is the wrong direction, and it is the direction the tool recommends.
+
+### If this gets fixed
+
+1. A `relink` / `adopt` command: for entries in the conflicting state, re-adopt
+   the **newer** side — copy local into the repo, recreate the symlink, commit.
+2. Point the `status` conflicting line at *that*, not at `link`.
+3. Reconcile the manifest header. It says "prefer individual `file` entries over
+   `dir`", which is right for the blast-radius reason it gives and wrong for
+   this one. Both are true; say so, and note that a config its owning tool
+   rewrites is the case where a `dir` entry (or a narrower file the tool never
+   touches) is the safer shape.
+
+Per the house rule in *Adding a command*: any fix needs a test that proves the
+unsafe case is still caught — specifically that `relink` refuses to overwrite a
+**newer repo** copy with an older local one, which is the mirror-image mistake.
+
+---
+
 ## Distribution / cutting a release
 
 Three channels, all serving the same single `bin/dotfiles` file:
@@ -227,6 +294,31 @@ Nothing blocking. In rough priority order:
   fetching the published URL and running `dotfiles version`, but no
   `docker build` has actually run against the new Dockerfile — there was no
   Docker daemon on the machine where this was extracted. Worth one build.
+- **`rm` crashes before committing when an entry has no repo copy.** Confirmed
+  2026-07-27 removing 13 entries at once. The unlink work all succeeded, then the
+  staging loop at the end of `cmd_rm` ran `git add -A -- .claude/commands` for a
+  manifest entry that was never actually added to the repo. git exits 128
+  (`pathspec ... did not match any files`), `set -e` aborts, and the manifest is
+  left **modified but uncommitted** — the tool reports nothing and looks like it
+  half-worked. The same applies to a path already staged as deleted. Guard the
+  loop: skip a `rel` that is absent from both the worktree and the index, or just
+  tolerate the failure (`git_d add -A -- "$rel" || true`) since the manifest
+  change is the part that must land. Cheap fix, and it is a "silent success"
+  violation in the other direction — silent *failure* after real work.
+- **Harness-clobbered `file` entries have a backwards remedy.** See the section
+  above. Confirmed in the wild, not theoretical; the fix is a `relink`/`adopt`
+  command plus a corrected `status` hint. Note this is now documented as a
+  *scope boundary* in `README.md` ("Not for agent-harness configs") rather than
+  something the tool promises to handle — so a fix here is a convenience for
+  people who ignore that advice, not a prerequisite. Priced accordingly.
+- **`foreign_symlinks` under-reports.** It only flags absolute targets outside
+  both `$HOME` and `$DOTFILES_DIR`, so a committed symlink to
+  `/Users/<you>/.skill-manager/...` passes — it is under `$HOME` on *this*
+  machine and dangles on every other one, which is the exact breakage the check
+  exists to catch. Seen live: an external skill manager replaced real
+  directories inside a tracked `dir` entry with absolute links into its own
+  store, so that content stopped syncing without a warning. The predicate wants
+  to be "absolute and not relocatable", not "absolute and outside `$HOME`".
 - **No `doctor` command.** `status` already reports stray symlinks and a dirty
   tree; a dedicated command could also check remote reachability, credential
   helper presence, and `dir` entries that have grown since they were added.

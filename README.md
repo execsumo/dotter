@@ -11,6 +11,11 @@ need those, use [chezmoi](https://chezmoi.io). This exists for the case where yo
 don't, and where a tool you can read in one sitting is worth more than features
 you won't use.
 
+> **Don't use this for AI coding-agent configs.** Any tool that rewrites its own
+> config file will silently destroy the symlink and stop syncing. See
+> [Not for agent-harness configs](#not-for-agent-harness-configs) — this is a
+> hard limit of the symlink approach, not a bug to be fixed.
+
 ## Install
 
 ### Homebrew (macOS / Linux)
@@ -166,6 +171,25 @@ type|relpath|label
 `#` comments and blank lines are ignored. `dotfiles add` appends to it for you,
 but it is a plain text file — edit it by hand whenever that's easier.
 
+### Editing the manifest by hand
+
+Adding a line to the manifest only records intent — it doesn't move anything.
+The full pattern, in order:
+
+1. **Move the file into the repo**, at the same relative path it has under
+   `$HOME`: `mv ~/.config/tool/config.toml ~/.dotfiles/.config/tool/config.toml`.
+2. **Add a line** to `dotfiles.manifest`: `file|.config/tool/config.toml|tool config`.
+3. **Commit and push**: `dotfiles sync -m "track tool config"`.
+4. **Symlink it back** here: `dotfiles link`.
+
+Do that in order — `link` only symlinks a manifest entry whose file already
+exists in the repo. A manifest line with nothing behind it is silently
+skipped (`dotfiles status` calls it out as not-in-repo).
+
+This is also the pattern for narrowing a `dir|` entry down to specific files:
+delete the `dir|` line, then repeat the four steps above for each file you
+actually want tracked.
+
 ### Prefer tracking files, be careful with whole directories
 
 The manifest is an allow-list on purpose: every entry is something you named
@@ -191,6 +215,74 @@ and non-portable symlinks, then makes you confirm. **That audit is a snapshot,
 not a guarantee.** It cannot know what the tool will write next week — so
 `dotfiles audit` re-runs it on demand across every tracked directory, to catch a
 config dir that has since grown an `auth.json`.
+
+## Not for agent-harness configs
+
+**Do not track the config of an AI coding agent — Claude Code, Codex,
+Antigravity, and the like — with this tool.** Symlinks are the wrong shape for
+them, and no amount of care on your side fixes it.
+
+The reason is mechanical. A config *you* edit in a text editor is written in
+place, so a symlink survives. A config the *tool itself* rewrites — when a
+plugin installs, when you toggle a setting, when it migrates its own schema — is
+written atomically: to a temp file, then `rename()` onto the target. `rename()`
+replaces the **symlink itself** with a regular file. From that moment:
+
+- your live config is a plain file the repo knows nothing about,
+- the repo copy silently goes stale,
+- nothing errors, and nothing tells you until you run `dotfiles status`.
+
+`status` does catch it (`local file exists but is not a link to the repo`). But
+by then the two copies have diverged, and `link` — the command that fixes every
+*other* unlinked state — will back up your live config and restore the **stale
+repo copy** over it. For this failure it is exactly the wrong direction.
+
+### Where this was actually observed
+
+Not theoretical. Both of these were tracked as `file|` entries, symlinked
+successfully, and found broken a week later:
+
+| Harness | Path | What happened |
+|---|---|---|
+| **Antigravity CLI** (`agy`) | `~/.gemini/antigravity-cli/settings.json` | Symlink replaced by a regular file. Nothing else manages that path, so the harness's own write is the only possible cause. |
+| **Claude Code** | `~/.claude/settings.json` | Symlink replaced by a regular file. The tracked copy was missing `statusLine`, `effortLevel`, `advisorModel`, `tui`, `theme`, `cleanupPeriodDays` — every one written by a plugin install or a `/config` toggle, none hand-edited. |
+
+Claude Code carries a second, independent reason: `~/.claude` is commonly its
+own git repo with its own remote. Tracking `settings.json` here as well puts two
+version-control systems on one file, and a `git checkout` in either one breaks
+the other's link.
+
+**Codex** (`~/.codex`) was never safe to track whole for a different reason —
+that directory holds `auth.json` with a live API key plus hundreds of MB of
+plugin binaries — and its individual config files are rewritten by the tool the
+same way the two above are.
+
+### What survives, and what to do instead
+
+In the same repo, over the same period, every entry that survived was either a
+directory entry or a file nothing rewrites programmatically — `.zshrc`,
+`.gitconfig`, a hand-edited `config.toml`. The split falls exactly where the
+mechanism predicts, because a `rename()` *inside* a symlinked directory resolves
+through the link into the repo rather than landing on it.
+
+A harness's hand-written prose files (a `CLAUDE.md`, an `AGENTS.md`) survive for
+the same reason and are genuinely lower risk. They are still worth keeping out:
+they live in a directory the harness rewrites around them, and splitting one
+tool's config across two sync systems is how you end up unsure which copy is
+real.
+
+That makes a `dir|` entry less exposed, **but it is not a fix**: a whole-directory
+entry for a harness sweeps in auth tokens, logs, and session state (see
+[Prefer tracking files](#prefer-tracking-files-be-careful-with-whole-directories)),
+and harness-adjacent tooling writes machine-specific absolute symlinks into it.
+One such tool replaced real directories inside a tracked entry with links into
+its own store; because those targets sat under `$HOME`, `status` did not flag
+them, and the content stopped syncing with no warning.
+
+Use the harness's own mechanism instead. Most of them either sync settings
+themselves or are happy to be a plain git repo *in place* — `git init` in
+`~/.claude` and push that, rather than symlinking pieces of it elsewhere. Keep
+dotter for what it is good at: configs that only you write.
 
 ## What to watch out for
 
