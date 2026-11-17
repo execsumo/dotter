@@ -9,7 +9,7 @@
 # no ${VAR,,}, no declare -A, no mapfile/readarray.
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 MANIFEST="$DOTFILES_DIR/dotfiles.manifest"

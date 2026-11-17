@@ -13,7 +13,7 @@ For *usage* see [README.md](README.md); for *why it is shaped this way* see
 
 | | |
 |---|---|
-| Version | 1.0.0 (`dotfiles version`), tagged `v1.0.0` |
+| Version | 1.0.1 (`dotfiles version`), tagged `v1.0.1` |
 | Implementation | `bin/dotfiles`, single file, ~1090 lines of bash |
 | Tests | `test/run-tests.sh`, 27 tests, all passing on bash 3.2 |
 | Consumers | vibebox (`scripts/onboard`) |
