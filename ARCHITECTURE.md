@@ -154,11 +154,10 @@ rm <path>        same file via symlinked ancestor? confirm, then delete
                  → commit manifest + path only
 ```
 
-**`add` and `rm` stage narrowly, `sync -m` stages broadly.** `add`/`rm` commit
+**`add` and `rm` stage narrowly, `sync` stages broadly.** `add`/`rm` commit
 only the manifest plus the paths they touched, because a commit labelled
 "remove X" must not silently carry your in-flight edits to unrelated config.
-`sync -m` is the one place a blanket `git add -A` is correct, because there the
-user explicitly asked to commit everything under that message.
+`sync` commits all working tree changes, using a timestamp unless a message is supplied.
 
 ---
 

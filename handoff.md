@@ -106,7 +106,7 @@ next path instead of prompting. If you add a prompt, use `confirm`.
 
 `add` and `rm` stage **only** the manifest plus the paths they touched. Never
 `git add -A` in those paths: a commit labelled "remove X" must not carry the
-user's unrelated in-flight config edits. `sync -m` is the sole place a blanket
+user's unrelated in-flight config edits. `sync` is the sole place a blanket
 add is correct, because the user asked for exactly that.
 
 ### Silent success is the enemy

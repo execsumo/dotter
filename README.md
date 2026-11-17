@@ -132,7 +132,8 @@ $ dotfiles status
 ```
 
 You edit your dotfiles the normal way — they're just files. When you're happy,
-`dotfiles sync -m "tweak prompt"` commits the working tree and pushes in one step.
+`dotfiles sync` commits the working tree with a timestamp and pushes in one step.
+Use `dotfiles sync -m "tweak prompt"` to provide a custom commit message.
 
 ## Command reference
 
@@ -141,7 +142,7 @@ You edit your dotfiles the normal way — they're just files. When you're happy,
 | `dotfiles init [--repo URL] [--yes]` | Clone the repo, or create it. Seeds the manifest and a `.gitignore`. |
 | `dotfiles add [--label T] [--yes] <path>...` | Move a file/dir into the repo, symlink it back, record it in the manifest, commit. Audits directories first. |
 | `dotfiles link` (alias `apply`) | Symlink every manifest entry present in the repo but not yet linked here. Backs up conflicts as `*.bak`. |
-| `dotfiles sync [-m MESSAGE]` | Pull remote changes, then push local commits. With `-m`, commits the working tree first. |
+| `dotfiles sync [-m MESSAGE]` | Commit working tree changes with a timestamp (or the supplied message), pull remote changes, then push. |
 | `dotfiles status` | Per-entry link state, plus repo health warnings. |
 | `dotfiles audit [--porcelain] [<path>...]` | Re-run the `add`-time safety audit against tracked paths. With no path, checks every `dir` entry. |
 | `dotfiles rm [--yes] <path>...` (alias `remove`) | Untrack: restore the real file to `$HOME`, drop the manifest entry. |
