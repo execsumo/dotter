@@ -254,12 +254,17 @@ Three channels, all serving the same single `bin/dotfiles` file:
 
 ### To ship a new version
 
+A release is complete only when both the GitHub release and Homebrew formula
+have been published and verified. Dotter has no tap automation yet, so update
+the formula manually for every release.
+
 1. Bump the `VERSION` in `bin/dotfiles` so `dotfiles version` matches, commit.
 2. Tag and release: `git tag -a vX.Y.Z -m "dotter vX.Y.Z" && git push origin vX.Y.Z`,
    then `gh release create vX.Y.Z`.
-3. Update the formula in `execsumo/homebrew-tap`: point `url` at the new
-   `.../archive/refs/tags/vX.Y.Z.tar.gz` and refresh `sha256`
-   (`curl -sL <url> | shasum -a 256`).
+3. Update and publish `Formula/dotter.rb` in `execsumo/homebrew-tap`: point
+   `url` at the new `.../archive/refs/tags/vX.Y.Z.tar.gz` and refresh `sha256`
+   from the downloaded tarball (`curl -fsSL <url> | shasum -a 256`). Confirm the
+   published formula contains the new URL and checksum.
 4. Verify: `brew update && brew upgrade dotter` (or a clean
    `brew install execsumo/tap/dotter`), then `brew test execsumo/tap/dotter`.
 
