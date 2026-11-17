@@ -9,7 +9,7 @@
 # no ${VAR,,}, no declare -A, no mapfile/readarray.
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 MANIFEST="$DOTFILES_DIR/dotfiles.manifest"
@@ -744,15 +744,10 @@ cmd_sync() {
   check_https_remote || true
 
   if [ -n "$(git_d status --porcelain)" ]; then
-    if [ -n "$msg" ]; then
-      git_d add -A
-      git_d commit -qm "$msg"
-      ok "Committed local changes: $msg"
-    else
-      warn "Working tree has uncommitted changes:"
-      git_d status --short | sed 's/^/      /'
-      info "Commit them with: dotfiles sync -m \"your message\""
-    fi
+    [ -n "$msg" ] || msg="$(date '+%Y-%m-%d %H:%M:%S %z')"
+    git_d add -A
+    git_d commit -qm "$msg"
+    ok "Committed local changes: $msg"
   fi
 
   # A repo can legitimately exist with zero commits and/or no upstream tracking
@@ -849,7 +844,7 @@ EOF
   local dirty
   dirty="$(git_d status --porcelain | wc -l | tr -d ' ')"
   if [ "$dirty" != "0" ]; then
-    warn "$dirty uncommitted change(s) — 'dotfiles sync -m \"msg\"' to commit and push"
+    warn "$dirty uncommitted change(s) — 'dotfiles sync' to commit and push"
   else
     ok "Working tree clean"
   fi
@@ -1048,7 +1043,7 @@ COMMANDS
                               record it in the manifest, and commit
   link                        Symlink everything in the manifest that is in the
                               repo but not yet linked here (backs up conflicts)
-  sync [-m MESSAGE]           Pull remote changes, then push local commits
+  sync [-m MESSAGE]           Commit changes, pull, then push (default message: timestamp)
   status                      Per-entry link state plus repo health
   audit [--porcelain] [P..]   Re-run the add-time audit against tracked paths.
                               With no path, checks every dir| entry.

@@ -104,6 +104,17 @@ test_sync_no_upstream() {
   "$BIN" sync >/dev/null
 }
 
+test_sync_messages() {
+  "$BIN" init --repo "$REMOTE_DIR" >/dev/null
+  echo first > "$DOTFILES_DIR/example"
+  "$BIN" sync >/dev/null
+  git -C "$DOTFILES_DIR" log -1 --format=%s | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}$'
+  echo second > "$DOTFILES_DIR/example"
+  "$BIN" sync -m 'custom message' >/dev/null
+  [ "$(git -C "$DOTFILES_DIR" log -1 --format=%s)" = 'custom message' ]
+  [ "$(git --git-dir="$REMOTE_DIR" log -1 --format=%s main)" = 'custom message' ]
+}
+
 test_init_branch_main() {
   git config --global init.defaultBranch master
   "$BIN" init --repo "$REMOTE_DIR" >/dev/null
@@ -419,6 +430,7 @@ run_test "Link preserves as .bak" test_link_preserves_bak
 run_test "Link is idempotent" test_link_idempotent
 run_test "Sync no commits" test_sync_no_commits
 run_test "Sync no upstream" test_sync_no_upstream
+run_test "Sync default and custom messages" test_sync_messages
 run_test "Init branch main explicitly" test_init_branch_main
 run_test "Init gitignore seeded" test_init_gitignore
 run_test "SSH remote warning" test_ssh_warning

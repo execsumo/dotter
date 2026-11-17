@@ -13,7 +13,7 @@ For *usage* see [README.md](README.md); for *why it is shaped this way* see
 
 | | |
 |---|---|
-| Version | 1.0.0 (`dotfiles version`), tagged `v1.0.0` |
+| Version | 1.0.1 (`dotfiles version`), tagged `v1.0.1` |
 | Implementation | `bin/dotfiles`, single file, ~1090 lines of bash |
 | Tests | `test/run-tests.sh`, 27 tests, all passing on bash 3.2 |
 | Consumers | vibebox (`scripts/onboard`) |
@@ -106,7 +106,7 @@ next path instead of prompting. If you add a prompt, use `confirm`.
 
 `add` and `rm` stage **only** the manifest plus the paths they touched. Never
 `git add -A` in those paths: a commit labelled "remove X" must not carry the
-user's unrelated in-flight config edits. `sync -m` is the sole place a blanket
+user's unrelated in-flight config edits. `sync` is the sole place a blanket
 add is correct, because the user asked for exactly that.
 
 ### Silent success is the enemy
